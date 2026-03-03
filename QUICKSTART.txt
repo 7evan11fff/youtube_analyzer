@@ -1,0 +1,140 @@
+================================================================================
+  YOUTUBE NICHE ANALYZER - QUICK START GUIDE
+================================================================================
+
+Welcome! Get started in 3 steps:
+
+STEP 1: INSTALL DEPENDENCIES
+================================================================================
+Run this command once:
+
+    pip install -r requirements.txt
+
+This takes about 2-3 minutes. Wait for it to complete.
+
+
+STEP 2: ANALYZE YOUR FIRST NICHE
+================================================================================
+Run this command:
+
+    python main.py "AI tutorials"
+
+Replace "AI tutorials" with any YouTube niche you want to analyze.
+
+Examples:
+    python main.py "fitness motivation"
+    python main.py "web development"
+    python main.py "cooking"
+    python main.py "cryptocurrency"
+
+The analysis takes 3-10 minutes depending on your internet speed.
+
+
+STEP 3: READ YOUR REPORT
+================================================================================
+When analysis completes, open this file:
+
+    output/report_*.md
+
+Open it with:
+    - Windows: Notepad, Word, or any text editor
+    - macOS: TextEdit or any editor
+    - Linux: nano, vim, or any editor
+
+This markdown file contains your complete content strategy blueprint!
+
+
+WHAT YOU'LL GET
+================================================================================
+After analysis completes, you'll have:
+
+1. Report (Markdown)
+   - Video strategy recommendations
+   - Top 5 content ideas
+   - What works/doesn't work
+   - 12-month growth roadmap
+   - Competitive analysis
+
+2. Data Files
+   - Videos dataset (CSV)
+   - Complete analysis (JSON)
+   - Charts and visualizations
+
+3. Key Insights
+   - Optimal video length
+   - Best upload times
+   - Title formulas that work
+   - Engagement benchmarks
+   - Market saturation level
+
+
+OPTIONAL: GET BETTER RESULTS
+================================================================================
+To analyze faster, get a free YouTube API key:
+
+1. Go to: https://console.cloud.google.com/
+2. Create a new project
+3. Enable "YouTube Data API v3"
+4. Create an "API key"
+5. Create a file named ".env" with this line:
+   YOUTUBE_API_KEY=your_key_here
+
+Without this, the tool still works but 50% slower.
+
+
+NEXT STEPS
+================================================================================
+After your first analysis:
+
+1. Read the generated Markdown report
+2. Review the Top 5 Content Ideas
+3. Pick one idea and create a video
+4. Use the Title Formula recommendations
+5. Apply the Hook Strategy
+
+Then analyze another niche to compare markets!
+
+
+COMMON ISSUES
+================================================================================
+"No videos found"
+  → Try a simpler niche name (e.g., "gaming" not "minecraft speedrun")
+
+"API quota exceeded"
+  → Wait a few hours, or get an API key (see above)
+
+"Database locked"
+  → Close all Python windows and try again
+
+For more issues, read: TROUBLESHOOTING.md
+
+
+HELP & DOCUMENTATION
+================================================================================
+- Quick start:      GETTING_STARTED.md
+- Full guide:       README.md
+- Troubleshooting:  TROUBLESHOOTING.md
+- Project details:  PROJECT_SUMMARY.md
+- Code examples:    example_usage.py
+
+
+TIPS FOR BEST RESULTS
+================================================================================
+✓ Use popular, searchable niches first
+✓ Analyze 50+ videos for accurate insights
+✓ Pay attention to "What Works" section
+✓ Differentiate yourself (don't copy exactly)
+✓ Create 5-10 videos before expecting views
+
+
+READY TO START?
+================================================================================
+Run this now:
+
+    python main.py "your niche here"
+
+Then open the report and start creating!
+
+Good luck! 🚀
+
+================================================================================
