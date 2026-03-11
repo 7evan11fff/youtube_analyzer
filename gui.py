@@ -1,6 +1,6 @@
 """
 YouTube Niche Analyzer – Modern Tabbed GUI
-Tabs: Analyze · Dashboard · Trends · Settings
+Tabs: Analyze · Dashboard · Trends · Help · Settings
 """
 
 import json
@@ -30,8 +30,16 @@ from output import OutputManager
 from database import get_db
 from scheduler import ScrapeScheduler
 from trends import get_trend_summary, format_trend_report
+from licensing import (
+    get_current_tier, get_stored_key, activate_key, deactivate_key,
+    get_max_videos, is_feature_unlocked, is_onboarding_complete,
+    set_onboarding_complete, validate_key,
+    TIER_NONE, TIER_FREE, TIER_PRO, TIER_LIMITS,
+)
 
 logger = logging.getLogger(__name__)
+
+TIER_DISPLAY = {TIER_NONE: "No License", TIER_FREE: "Free", TIER_PRO: "Pro"}
 
 # ─── colour palette ────────────────────────────────────────────────
 C_BG       = "#1a1a2e"
@@ -43,6 +51,177 @@ C_WARN     = "#f39c12"
 C_TEXT     = "#eaeaea"
 C_MUTED    = "#7f8c8d"
 C_CHART_BG = "#0d1b2a"
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Onboarding walkthrough dialog
+# ════════════════════════════════════════════════════════════════════
+class OnboardingDialog(ctk.CTkToplevel):
+    """Multi-step first-launch walkthrough with license activation."""
+
+    STEPS = [
+        {
+            "title": "Welcome to YouTube Niche Analyzer",
+            "body": (
+                "This tool helps you analyse any YouTube niche and generate\n"
+                "data-driven content strategies.\n\n"
+                "If you have a license key, enter it below to unlock features.\n"
+                "You can also skip and use the app with limited features."
+            ),
+            "has_key_input": True,
+        },
+        {
+            "title": "Step 1 — Analyze Tab",
+            "body": (
+                "Enter a niche (e.g. \"cyber security\"), set the video count,\n"
+                "and click Start Analysis.\n\n"
+                "The tool will scrape YouTube, collect video metadata, and run\n"
+                "engagement, competition, and correlation analysis automatically."
+            ),
+        },
+        {
+            "title": "Step 2 — Dashboard Tab",
+            "body": (
+                "After an analysis completes, switch to the Dashboard tab to see\n"
+                "interactive charts:\n\n"
+                "  - View distribution pie chart\n"
+                "  - Video length vs views\n"
+                "  - Title pattern impact on performance\n"
+                "  - Upload day analysis\n"
+                "  - Metric summary cards"
+            ),
+        },
+        {
+            "title": "Step 3 — Trends Tab",
+            "body": (
+                "Every analysis saves a snapshot. Over time you can track how\n"
+                "a niche changes — median views, engagement, competition.\n\n"
+                "Go to the Trends tab, enter a niche, and click Load Trends\n"
+                "to see historical data and trend line charts."
+            ),
+        },
+        {
+            "title": "Step 4 — Settings",
+            "body": (
+                "In the Settings tab you can:\n\n"
+                "  - Add a YouTube API key (optional, speeds up collection)\n"
+                "  - Set up auto-scrape schedules to track niches over time\n"
+                "  - Manage your license key\n"
+                "  - Change the theme (dark / light / system)\n\n"
+                "You're all set — click Finish to start using the app!"
+            ),
+        },
+    ]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Welcome")
+        self.geometry("560x420")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._parent = parent
+        self._step = 0
+        self._activated_tier = None
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # title
+        self._title_lbl = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=20, weight="bold"))
+        self._title_lbl.grid(row=0, column=0, padx=28, pady=(24, 4), sticky="w")
+
+        # body frame
+        self._body_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._body_frame.grid(row=1, column=0, sticky="nsew", padx=28, pady=4)
+        self._body_frame.grid_columnconfigure(0, weight=1)
+
+        # nav bar
+        nav = ctk.CTkFrame(self, fg_color="transparent")
+        nav.grid(row=2, column=0, sticky="ew", padx=28, pady=(8, 20))
+        nav.grid_columnconfigure(1, weight=1)
+
+        self._dont_show_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(nav, text="Don't show again", variable=self._dont_show_var,
+                        font=ctk.CTkFont(size=11)).grid(row=0, column=0, sticky="w")
+
+        btn_frame = ctk.CTkFrame(nav, fg_color="transparent")
+        btn_frame.grid(row=0, column=2, sticky="e")
+        self._back_btn = ctk.CTkButton(btn_frame, text="Back", width=80, height=34,
+                                        command=self._go_back, state="disabled")
+        self._back_btn.pack(side="left", padx=(0, 6))
+        self._next_btn = ctk.CTkButton(btn_frame, text="Next", width=80, height=34,
+                                        fg_color=C_SUCCESS, hover_color="#27ae60",
+                                        command=self._go_next)
+        self._next_btn.pack(side="left", padx=(0, 6))
+        self._skip_btn = ctk.CTkButton(btn_frame, text="Skip", width=80, height=34,
+                                        fg_color=C_MUTED, command=self._finish)
+        self._skip_btn.pack(side="left")
+
+        self._key_entry = None
+        self._key_status = None
+        self._render_step()
+
+    def _render_step(self):
+        for w in self._body_frame.winfo_children():
+            w.destroy()
+
+        step = self.STEPS[self._step]
+        self._title_lbl.configure(text=step["title"])
+
+        ctk.CTkLabel(self._body_frame, text=step["body"], font=ctk.CTkFont(size=13),
+                     justify="left", wraplength=490).pack(anchor="w", pady=(8, 4))
+
+        if step.get("has_key_input"):
+            kf = ctk.CTkFrame(self._body_frame, fg_color="transparent")
+            kf.pack(fill="x", pady=(10, 0))
+            ctk.CTkLabel(kf, text="License Key:", font=ctk.CTkFont(size=12)).pack(anchor="w")
+            self._key_entry = ctk.CTkEntry(kf, placeholder_text="YTNA-XXXX-XXXX-XXXX-XX",
+                                            height=36, font=ctk.CTkFont(size=13))
+            self._key_entry.pack(fill="x", pady=(4, 4))
+            bf = ctk.CTkFrame(kf, fg_color="transparent")
+            bf.pack(fill="x")
+            ctk.CTkButton(bf, text="Activate", height=32, width=100, fg_color=C_SUCCESS,
+                           hover_color="#27ae60", command=self._try_activate).pack(side="left")
+            self._key_status = ctk.CTkLabel(bf, text="", font=ctk.CTkFont(size=11))
+            self._key_status.pack(side="left", padx=(10, 0))
+
+        self._back_btn.configure(state="normal" if self._step > 0 else "disabled")
+        is_last = self._step == len(self.STEPS) - 1
+        self._next_btn.configure(text="Finish" if is_last else "Next")
+
+    def _try_activate(self):
+        key = self._key_entry.get().strip()
+        if not key:
+            self._key_status.configure(text="Enter a key first", text_color=C_WARN)
+            return
+        tier = activate_key(key)
+        if tier:
+            self._activated_tier = tier
+            self._key_status.configure(
+                text=f"Activated! Tier: {TIER_DISPLAY.get(tier, tier).upper()}",
+                text_color=C_SUCCESS)
+        else:
+            self._key_status.configure(text="Invalid key", text_color=C_PRIMARY)
+
+    def _go_back(self):
+        if self._step > 0:
+            self._step -= 1
+            self._render_step()
+
+    def _go_next(self):
+        if self._step < len(self.STEPS) - 1:
+            self._step += 1
+            self._render_step()
+        else:
+            self._finish()
+
+    def _finish(self):
+        if self._dont_show_var.get():
+            set_onboarding_complete(True)
+        self.grab_release()
+        self.destroy()
+        self._parent._on_onboarding_done()
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -67,6 +246,7 @@ class AnalyzerApp(ctk.CTk):
         self._latest_blueprint: Optional[dict] = None
         self._latest_videos: Optional[list] = None
         self._latest_niche: str = ""
+        self._current_tier: str = get_current_tier()
 
         self._scheduler = ScrapeScheduler(run_callback=self._auto_scrape_callback)
 
@@ -76,6 +256,10 @@ class AnalyzerApp(ctk.CTk):
         self._build_header()
         self._build_tabs()
         self._build_footer()
+        self._apply_tier_gates()
+
+        if not is_onboarding_complete():
+            self.after(400, self._show_onboarding)
 
     # ── header ──────────────────────────────────────────────────────
     def _build_header(self):
@@ -86,9 +270,16 @@ class AnalyzerApp(ctk.CTk):
         ctk.CTkLabel(hdr, text="YouTube Niche Analyzer",
                      font=ctk.CTkFont(size=26, weight="bold")).grid(row=0, column=0, sticky="w")
 
-        badge = ctk.CTkLabel(hdr, text="v2.0", font=ctk.CTkFont(size=12),
-                             text_color=C_MUTED)
-        badge.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ctk.CTkLabel(hdr, text="v2.0", font=ctk.CTkFont(size=12),
+                     text_color=C_MUTED).grid(row=0, column=1, sticky="w", padx=(10, 0))
+
+        tier_colors = {TIER_NONE: C_MUTED, TIER_FREE: C_WARN, TIER_PRO: C_SUCCESS}
+        self._tier_badge = ctk.CTkLabel(
+            hdr, text=f"  {TIER_DISPLAY.get(self._current_tier, 'No License').upper()}  ",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="white", fg_color=tier_colors.get(self._current_tier, C_MUTED),
+            corner_radius=6)
+        self._tier_badge.grid(row=0, column=2, sticky="e", padx=(0, 4))
 
     # ── tabs ────────────────────────────────────────────────────────
     def _build_tabs(self):
@@ -99,11 +290,13 @@ class AnalyzerApp(ctk.CTk):
         self._tab_analyze  = self.tabview.add("  Analyze  ")
         self._tab_dash     = self.tabview.add("  Dashboard  ")
         self._tab_trends   = self.tabview.add("  Trends  ")
+        self._tab_help     = self.tabview.add("  Help  ")
         self._tab_settings = self.tabview.add("  Settings  ")
 
         self._build_analyze_tab()
         self._build_dashboard_tab()
         self._build_trends_tab()
+        self._build_help_tab()
         self._build_settings_tab()
 
     # ── footer ──────────────────────────────────────────────────────
@@ -455,6 +648,11 @@ class AnalyzerApp(ctk.CTk):
             self.trend_text.insert("1.0", "No snapshots yet. Run an analysis first.")
 
     def _load_trends(self):
+        if not is_feature_unlocked("trends", self._current_tier):
+            messagebox.showinfo("Pro Feature", "Trend tracking requires a Pro license.\n"
+                                                "Enter a Pro key in Settings to unlock.")
+            return
+
         niche = self.trend_niche_entry.get().strip()
         if not niche:
             messagebox.showwarning("Input needed", "Enter a niche name to load trends.")
@@ -464,7 +662,6 @@ class AnalyzerApp(ctk.CTk):
         self.trend_text.delete("1.0", "end")
         self.trend_text.insert("1.0", report)
 
-        # draw trend chart
         data = get_trend_summary(niche)
         if "error" not in data and data.get("snapshot_count", 0) >= 2:
             self._draw_trend_chart(data)
@@ -584,9 +781,12 @@ class AnalyzerApp(ctk.CTk):
         self.sched_list_box.grid(row=4, column=0, padx=14, pady=(4, 14), sticky="ew", columnspan=3)
         self._refresh_schedule_list()
 
+        # ── License key ──
+        self._build_license_section(scroll, grid_row=2)
+
         # ── Appearance ──
         sec3 = ctk.CTkFrame(scroll)
-        sec3.grid(row=2, column=0, sticky="ew", padx=8, pady=8)
+        sec3.grid(row=3, column=0, sticky="ew", padx=8, pady=8)
         sec3.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(sec3, text="Appearance",
                      font=ctk.CTkFont(size=15, weight="bold")).grid(
@@ -599,6 +799,9 @@ class AnalyzerApp(ctk.CTk):
 
     # ── schedule helpers ──
     def _add_schedule(self):
+        if not is_feature_unlocked("auto_scrape", self._current_tier):
+            messagebox.showinfo("Pro Feature", "Auto-scrape requires a Pro license.")
+            return
         niche = self.sched_niche.get().strip()
         hours_str = self.sched_hours.get().strip() or "24"
         if not niche:
@@ -705,14 +908,18 @@ class AnalyzerApp(ctk.CTk):
     def _run_analysis(self):
         try:
             niche = self.niche_entry.get().strip()
-            count = self.video_count_var.get()
+            tier = self._current_tier
+            max_v = get_max_videos(tier)
+            count = min(self.video_count_var.get(), max_v)
             api_key = self.api_entry.get().strip() or os.getenv("YOUTUBE_API_KEY") or None
             force = self.force_var.get()
             skip_viz = self.skipviz_var.get()
 
+            tier_label = TIER_DISPLAY.get(tier, tier).upper()
             self.after(0, lambda: self._log(
                 f"{'=' * 56}\n  Starting Analysis: {niche}\n"
-                f"  Videos: {count} | Force refresh: {force}\n{'=' * 56}\n", clear=True))
+                f"  Videos: {count} (max {max_v} for {tier_label}) | Force refresh: {force}\n"
+                f"{'=' * 56}\n", clear=True))
 
             self.after(0, lambda: self._set_status("Collecting video data…", 0.08))
             collector = NicheDataCollector(api_key=api_key)
@@ -748,18 +955,23 @@ class AnalyzerApp(ctk.CTk):
                 viz = output_mgr.generate_visualizations(analysis, videos, niche)
                 self.after(0, lambda: self._log(f"  ✓ {len(viz)} visualisations created"))
 
-            json_f = output_mgr.export_json(
-                {"analysis": analysis, "blueprint": blueprint,
-                 "metadata": {"niche": niche, "total_videos": len(videos),
-                              "generated_at": datetime.utcnow().isoformat()}},
-                filename=f"complete_analysis_{niche.replace(' ', '_')}")
-            csv_f = output_mgr.export_csv(videos, filename=f"videos_{niche.replace(' ', '_')}")
             md_f = output_mgr.export_markdown_report(analysis, blueprint, videos, niche)
+            self._output_files["markdown"] = md_f
 
-            self._output_files = {"json": json_f, "csv": csv_f, "markdown": md_f}
+            if is_feature_unlocked("json_export", tier):
+                json_f = output_mgr.export_json(
+                    {"analysis": analysis, "blueprint": blueprint,
+                     "metadata": {"niche": niche, "total_videos": len(videos),
+                                  "generated_at": datetime.utcnow().isoformat()}},
+                    filename=f"complete_analysis_{niche.replace(' ', '_')}")
+                self._output_files["json"] = json_f
+
+            if is_feature_unlocked("csv_export", tier):
+                csv_f = output_mgr.export_csv(videos, filename=f"videos_{niche.replace(' ', '_')}")
+                self._output_files["csv"] = csv_f
+
             self.after(0, lambda: self._log("  ✓ Reports exported"))
 
-            # store for dashboard
             self._latest_analysis = analysis
             self._latest_blueprint = blueprint
             self._latest_videos = videos
@@ -767,7 +979,10 @@ class AnalyzerApp(ctk.CTk):
 
             self.after(0, lambda: self._set_status("Complete!", 1.0))
             self.after(0, self._show_summary)
-            self.after(0, self._populate_dashboard)
+
+            if is_feature_unlocked("dashboard", tier):
+                self.after(0, self._populate_dashboard)
+
             self.after(0, self._enable_file_buttons)
             self.after(0, lambda: self._footer_ts.configure(
                 text=f"Last: {datetime.now().strftime('%Y-%m-%d %H:%M')}"))
@@ -843,6 +1058,214 @@ class AnalyzerApp(ctk.CTk):
                 os.startfile(str(p))
             else:
                 os.system(f'xdg-open "{p}"')
+
+    # ════════════════════════════════════════════════════════════════
+    #  TAB — Help
+    # ════════════════════════════════════════════════════════════════
+    def _build_help_tab(self):
+        tab = self._tab_help
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+
+        scroll = ctk.CTkScrollableFrame(tab)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        scroll.grid_columnconfigure(0, weight=1)
+
+        help_text = ctk.CTkTextbox(scroll, font=ctk.CTkFont(family="Menlo", size=12),
+                                    wrap="word", height=2000, activate_scrollbars=False)
+        help_text.pack(fill="both", expand=True, padx=8, pady=8)
+
+        content = (
+            "YOUTUBE NICHE ANALYZER — HELP\n"
+            "=" * 56 + "\n\n"
+
+            "QUICK START\n"
+            "-" * 56 + "\n"
+            "1. Go to the Analyze tab\n"
+            "2. Type a niche (e.g. \"cyber security\", \"AI tutorials\")\n"
+            "3. Set the number of videos with the slider\n"
+            "4. Click Start Analysis and wait for it to complete\n"
+            "5. Switch to the Dashboard tab to see visual charts\n"
+            "6. Open the generated report from the output/ folder\n\n"
+
+            "TABS OVERVIEW\n"
+            "-" * 56 + "\n\n"
+
+            "  ANALYZE\n"
+            "  Enter a niche, configure video count, and run the\n"
+            "  analysis pipeline. Results appear in the log panel.\n"
+            "  Export buttons (JSON, CSV, Report, Folder) unlock\n"
+            "  after the analysis completes.\n\n"
+
+            "  DASHBOARD\n"
+            "  Visual charts from your latest analysis:\n"
+            "  - Metric cards (views, engagement, channels)\n"
+            "  - View distribution pie chart\n"
+            "  - Video length vs performance bar chart\n"
+            "  - Title pattern impact chart\n"
+            "  - Upload day analysis\n"
+            "  - Video length mix pie chart\n\n"
+
+            "  TRENDS\n"
+            "  Every analysis automatically saves a snapshot.\n"
+            "  Come back to this tab to see how metrics change\n"
+            "  over time with trend line charts.\n\n"
+
+            "  SETTINGS\n"
+            "  - YouTube API key (optional, speeds up scraping)\n"
+            "  - Auto-scrape scheduler (track niches over time)\n"
+            "  - License key management\n"
+            "  - Theme selector\n\n"
+
+            "LICENSE TIERS\n"
+            "-" * 56 + "\n\n"
+            "  Feature                No Key   Free     Pro\n"
+            "  " + "-" * 52 + "\n"
+            "  Max videos/analysis    15       40       300\n"
+            "  Markdown report        Yes      Yes      Yes\n"
+            "  JSON / CSV export      --       Yes      Yes\n"
+            "  Dashboard charts       --       Yes      Yes\n"
+            "  Trend tracking         --       --       Yes\n"
+            "  Auto-scrape            --       --       Yes\n"
+            "  Correlation analysis   --       Partial  Yes\n\n"
+
+            "FAQ\n"
+            "-" * 56 + "\n\n"
+
+            "Q: Do I need a YouTube API key?\n"
+            "A: No. Without one the tool uses yt-dlp scraping which\n"
+            "   is slower but has no quota limits.\n\n"
+
+            "Q: I get an SSL certificate error\n"
+            "A: This is fixed automatically. If it persists, make\n"
+            "   sure you're using the virtual environment:\n"
+            "   source venv/bin/activate && python main.py\n\n"
+
+            "Q: The app freezes during analysis\n"
+            "A: Analysis runs in a background thread. The GUI should\n"
+            "   stay responsive. If it freezes, ensure matplotlib Agg\n"
+            "   backend is set (check output.py imports).\n\n"
+
+            "Q: How do I get a license key?\n"
+            "A: Contact the developer for a Free or Pro key.\n"
+            "   Enter it in Settings > License Key, or during the\n"
+            "   first-launch onboarding walkthrough.\n\n"
+
+            "Q: Where are reports saved?\n"
+            "A: In the output/ folder. JSON, CSV, and Markdown\n"
+            "   files are created after each analysis.\n\n"
+
+            "KEYBOARD SHORTCUTS\n"
+            "-" * 56 + "\n"
+            "  Cmd+Q / Alt+F4  — Quit the application\n"
+        )
+
+        help_text.insert("1.0", content)
+        help_text.configure(state="disabled")
+
+    # ════════════════════════════════════════════════════════════════
+    #  Onboarding + License management
+    # ════════════════════════════════════════════════════════════════
+    def _show_onboarding(self):
+        OnboardingDialog(self)
+
+    def _on_onboarding_done(self):
+        self._current_tier = get_current_tier()
+        self._refresh_tier_badge()
+        self._apply_tier_gates()
+
+    def _refresh_tier_badge(self):
+        tier_colors = {TIER_NONE: C_MUTED, TIER_FREE: C_WARN, TIER_PRO: C_SUCCESS}
+        self._tier_badge.configure(
+            text=f"  {TIER_DISPLAY.get(self._current_tier, 'No License').upper()}  ",
+            fg_color=tier_colors.get(self._current_tier, C_MUTED))
+
+    def _apply_tier_gates(self):
+        """Enable/disable UI elements based on the current license tier."""
+        tier = self._current_tier
+
+        # slider max
+        max_v = get_max_videos(tier)
+        self.video_slider.configure(to=max_v)
+        if self.video_count_var.get() > max_v:
+            self.video_count_var.set(max_v)
+            self.count_lbl.configure(text=str(max_v))
+
+        # Dashboard tab
+        if not is_feature_unlocked("dashboard", tier):
+            if self._dash_placeholder:
+                self._dash_placeholder.configure(
+                    text="Dashboard requires a Free or Pro license.\nEnter a key in Settings.")
+        # Trends tab
+        if not is_feature_unlocked("trends", tier):
+            self.trend_text.delete("1.0", "end")
+            self.trend_text.insert("1.0", "Trend tracking requires a Pro license.\n"
+                                           "Enter a Pro key in Settings to unlock this feature.")
+
+    # ════════════════════════════════════════════════════════════════
+    #  License key section in Settings
+    # ════════════════════════════════════════════════════════════════
+    def _build_license_section(self, parent, grid_row):
+        sec = ctk.CTkFrame(parent)
+        sec.grid(row=grid_row, column=0, sticky="ew", padx=8, pady=8)
+        sec.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(sec, text="License Key",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=14, pady=(12, 4), sticky="w")
+
+        tier = self._current_tier
+        status_text = f"Current tier: {TIER_DISPLAY.get(tier, tier).upper()}"
+        stored = get_stored_key()
+        if stored:
+            masked = stored[:9] + "..." + stored[-2:]
+            status_text += f"  |  Key: {masked}"
+        self._license_status = ctk.CTkLabel(sec, text=status_text,
+                                             font=ctk.CTkFont(size=11), text_color=C_MUTED)
+        self._license_status.grid(row=1, column=0, padx=14, sticky="w")
+
+        kf = ctk.CTkFrame(sec, fg_color="transparent")
+        kf.grid(row=2, column=0, padx=14, pady=(8, 4), sticky="ew")
+        kf.grid_columnconfigure(0, weight=1)
+        self._settings_key_entry = ctk.CTkEntry(kf, placeholder_text="YTNA-XXXX-XXXX-XXXX-XX",
+                                                  height=36)
+        self._settings_key_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkButton(kf, text="Activate", height=36, width=100, fg_color=C_SUCCESS,
+                       hover_color="#27ae60", command=self._activate_from_settings).grid(
+            row=0, column=1, padx=(0, 4))
+        ctk.CTkButton(kf, text="Deactivate", height=36, width=100, fg_color=C_PRIMARY,
+                       hover_color="#c0392b", command=self._deactivate_from_settings).grid(
+            row=0, column=2)
+
+        self._settings_key_msg = ctk.CTkLabel(sec, text="", font=ctk.CTkFont(size=11))
+        self._settings_key_msg.grid(row=3, column=0, padx=14, pady=(2, 12), sticky="w")
+
+    def _activate_from_settings(self):
+        key = self._settings_key_entry.get().strip()
+        if not key:
+            self._settings_key_msg.configure(text="Enter a key first.", text_color=C_WARN)
+            return
+        tier = activate_key(key)
+        if tier:
+            self._current_tier = tier
+            self._refresh_tier_badge()
+            self._apply_tier_gates()
+            self._settings_key_msg.configure(
+                text=f"Activated: {TIER_DISPLAY.get(tier, tier).upper()}", text_color=C_SUCCESS)
+            stored = get_stored_key() or ""
+            masked = stored[:9] + "..." + stored[-2:] if stored else ""
+            self._license_status.configure(
+                text=f"Current tier: {TIER_DISPLAY.get(tier, tier).upper()}  |  Key: {masked}")
+        else:
+            self._settings_key_msg.configure(text="Invalid license key.", text_color=C_PRIMARY)
+
+    def _deactivate_from_settings(self):
+        deactivate_key()
+        self._current_tier = TIER_NONE
+        self._refresh_tier_badge()
+        self._apply_tier_gates()
+        self._license_status.configure(text=f"Current tier: NO LICENSE")
+        self._settings_key_msg.configure(text="License deactivated.", text_color=C_MUTED)
 
 
 def launch_gui():

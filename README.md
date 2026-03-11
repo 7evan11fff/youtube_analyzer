@@ -95,7 +95,64 @@ python main.py --help
 
 You should see the help menu.
 
-## Quick Start
+## Tutorial: Your First Analysis
+
+This walks you through a complete analysis from scratch.
+
+### 1. Launch the App
+
+```bash
+cd youtube_analyzer
+source venv/bin/activate   # activate virtual environment
+python main.py             # opens the GUI
+```
+
+On your first launch you'll see a **welcome walkthrough** — it explains each tab and lets you enter a license key (if you have one). You can skip it and come back later.
+
+### 2. Enter a Niche and Run
+
+1. In the **Analyze** tab, type a niche in the text field, e.g. `cyber security`
+2. Use the slider to pick how many videos to analyse (start with 50 for a quick test)
+3. Click **Start Analysis**
+
+The tool will:
+- Search YouTube for videos matching your niche (using multiple search strategies)
+- Collect view counts, like counts, durations, titles, and descriptions
+- Run engagement, competition, and correlation analysis
+- Generate a content strategy blueprint
+- Export reports to the `output/` folder
+
+### 3. View Your Dashboard
+
+Once the analysis completes, switch to the **Dashboard** tab to see:
+- **Metric cards** — median views, avg views, engagement rate, video count, channel count
+- **View distribution pie chart** — how many videos fall into each view bracket
+- **Video length vs views** — which video length performs best
+- **Title pattern impact** — which title patterns (numbers, questions, how-to, etc.) boost or hurt views
+- **Upload day analysis** — which days get the most views
+
+### 4. Check Your Reports
+
+Click the **Report** button in the Analyze tab (or open `output/` directly) to see:
+- `report_*.md` — full markdown report with strategy, roadmap, and correlations
+- `complete_analysis_*.json` — raw analysis data
+- `videos_*.csv` — spreadsheet of all collected videos
+
+### 5. Track Trends Over Time
+
+Each analysis automatically saves a snapshot. Run the same niche again in a few days/weeks, then go to the **Trends** tab, enter the niche, and click **Load Trends** to see how metrics change over time with trend line charts.
+
+### 6. Set Up Auto-Scrape (Pro)
+
+In the **Settings** tab, add a niche to the auto-scrape scheduler with a custom interval (e.g. every 24 hours). Toggle the scheduler on, and it will automatically re-scrape and save snapshots in the background.
+
+### License Keys
+
+The app works without a license key (limited to 15 videos, markdown-only export). Enter a Free or Pro key in Settings or during the onboarding walkthrough to unlock more features. See the Help tab in the app for a full tier comparison.
+
+---
+
+## Quick Start (CLI)
 
 ### Basic Usage
 
