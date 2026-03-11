@@ -154,9 +154,9 @@ class OnboardingDialog(ctk.CTkToplevel):
                                         fg_color=C_SUCCESS, hover_color="#27ae60",
                                         command=self._go_next)
         self._next_btn.pack(side="left", padx=(0, 6))
-        self._skip_btn = ctk.CTkButton(btn_frame, text="Skip", width=80, height=34,
-                                        fg_color=C_MUTED, command=self._finish)
-        self._skip_btn.pack(side="left")
+        self._trial_btn = ctk.CTkButton(btn_frame, text="Trial Mode", width=100, height=34,
+                                         fg_color=C_MUTED, command=self._confirm_trial)
+        self._trial_btn.pack(side="left")
 
         self._key_entry = None
         self._key_status = None
@@ -190,6 +190,12 @@ class OnboardingDialog(ctk.CTkToplevel):
         is_last = self._step == len(self.STEPS) - 1
         self._next_btn.configure(text="Finish" if is_last else "Next")
 
+        # Only show Trial Mode on the key-entry step, hide once activated
+        if self._step == 0 and not self._activated_tier:
+            self._trial_btn.pack(side="left")
+        else:
+            self._trial_btn.pack_forget()
+
     def _try_activate(self):
         key = self._key_entry.get().strip()
         if not key:
@@ -203,6 +209,21 @@ class OnboardingDialog(ctk.CTkToplevel):
                 text_color=C_SUCCESS)
         else:
             self._key_status.configure(text="Invalid key", text_color=C_PRIMARY)
+
+    def _confirm_trial(self):
+        ok = messagebox.askyesno(
+            "Continue Without a License?",
+            "Trial mode limits:\n\n"
+            "  - Max 50 videos per analysis\n"
+            "  - Markdown reports only (no JSON/CSV)\n"
+            "  - No Dashboard charts\n"
+            "  - No Trend tracking\n"
+            "  - No Auto-scrape\n\n"
+            "You can enter a license key later in Settings.\n\n"
+            "Continue in trial mode?",
+            parent=self)
+        if ok:
+            self._finish()
 
     def _go_back(self):
         if self._step > 0:
@@ -1121,7 +1142,7 @@ class AnalyzerApp(ctk.CTk):
             "-" * 56 + "\n\n"
             "  Feature                No Key   Free     Pro\n"
             "  " + "-" * 52 + "\n"
-            "  Max videos/analysis    15       40       300\n"
+            "  Max videos/analysis    50       100      300\n"
             "  Markdown report        Yes      Yes      Yes\n"
             "  JSON / CSV export      --       Yes      Yes\n"
             "  Dashboard charts       --       Yes      Yes\n"

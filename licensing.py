@@ -36,7 +36,7 @@ _CODE_FOR_TIER = {TIER_FREE: "FR", TIER_PRO: "PR"}
 # ── feature limits per tier ─────────────────────────────────────────
 TIER_LIMITS: Dict[str, Dict[str, Any]] = {
     TIER_NONE: {
-        "max_videos": 15,
+        "max_videos": 50,
         "json_export": False,
         "csv_export": False,
         "dashboard": False,
@@ -46,7 +46,7 @@ TIER_LIMITS: Dict[str, Dict[str, Any]] = {
         "markdown_export": True,
     },
     TIER_FREE: {
-        "max_videos": 40,
+        "max_videos": 100,
         "json_export": True,
         "csv_export": True,
         "dashboard": True,
