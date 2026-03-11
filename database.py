@@ -109,7 +109,39 @@ class YouTubeAnalyzerDB:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        # Timestamped snapshots for trend tracking
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS niche_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                niche TEXT NOT NULL,
+                scraped_at TEXT NOT NULL,
+                video_count INTEGER,
+                unique_channels INTEGER,
+                avg_views REAL,
+                median_views REAL,
+                avg_engagement REAL,
+                avg_like_ratio REAL,
+                top_topics_json TEXT,
+                analysis_json TEXT,
+                blueprint_json TEXT
+            )
+        """)
+
+        # Auto-scrape schedule config
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scrape_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                niche TEXT UNIQUE NOT NULL,
+                enabled INTEGER DEFAULT 0,
+                interval_hours INTEGER DEFAULT 24,
+                video_count INTEGER DEFAULT 50,
+                last_run TEXT,
+                next_run TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         logger.info(f"Database initialized at {self.db_path}")
     
@@ -364,6 +396,150 @@ class YouTubeAnalyzerDB:
             logger.error(f"Error retrieving channels: {e}")
             return []
     
+    # ── Snapshot methods for trend tracking ──
+
+    def save_snapshot(self, niche: str, analysis: Dict[str, Any],
+                      blueprint: Dict[str, Any], video_count: int) -> bool:
+        """Save a timestamped snapshot of analysis results for trend tracking."""
+        try:
+            conn = self._get_connection()
+            engagement = analysis.get("engagement", {}).get("engagement_analysis", {})
+            benchmarks = engagement.get("engagement_benchmarks", {})
+            topics = analysis.get("competition", {}).get("niche_topics", [])
+
+            conn.execute("""
+                INSERT INTO niche_snapshots
+                    (niche, scraped_at, video_count, unique_channels,
+                     avg_views, median_views, avg_engagement, avg_like_ratio,
+                     top_topics_json, analysis_json, blueprint_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                niche,
+                datetime.utcnow().isoformat(),
+                video_count,
+                analysis.get("metadata", {}).get("unique_channels", 0),
+                engagement.get("average_views_per_video", 0),
+                engagement.get("median_views", 0),
+                benchmarks.get("average_engagement_rate_percent", 0),
+                benchmarks.get("average_like_ratio_percent", 0),
+                json.dumps(topics[:10]),
+                json.dumps(analysis),
+                json.dumps(blueprint),
+            ))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error saving snapshot: {e}")
+            return False
+
+    def get_snapshots(self, niche: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get historical snapshots for a niche, newest first."""
+        try:
+            conn = self._get_connection()
+            rows = conn.execute("""
+                SELECT id, niche, scraped_at, video_count, unique_channels,
+                       avg_views, median_views, avg_engagement, avg_like_ratio,
+                       top_topics_json
+                FROM niche_snapshots
+                WHERE niche = ?
+                ORDER BY scraped_at DESC
+                LIMIT ?
+            """, (niche, limit)).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error getting snapshots: {e}")
+            return []
+
+    def get_snapshot_detail(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
+        """Get full snapshot including analysis and blueprint JSON."""
+        try:
+            conn = self._get_connection()
+            row = conn.execute(
+                "SELECT * FROM niche_snapshots WHERE id = ?", (snapshot_id,)
+            ).fetchone()
+            if row:
+                d = dict(row)
+                d["analysis"] = json.loads(d.get("analysis_json") or "{}")
+                d["blueprint"] = json.loads(d.get("blueprint_json") or "{}")
+                d["top_topics"] = json.loads(d.get("top_topics_json") or "[]")
+                return d
+            return None
+        except Exception as e:
+            logger.error(f"Error getting snapshot detail: {e}")
+            return None
+
+    def get_all_tracked_niches(self) -> List[str]:
+        """Get list of niches that have at least one snapshot."""
+        try:
+            conn = self._get_connection()
+            rows = conn.execute(
+                "SELECT DISTINCT niche FROM niche_snapshots ORDER BY niche"
+            ).fetchall()
+            return [r["niche"] for r in rows]
+        except Exception as e:
+            logger.error(f"Error getting tracked niches: {e}")
+            return []
+
+    # ── Schedule methods for auto-scrape ──
+
+    def save_schedule(self, niche: str, enabled: bool,
+                      interval_hours: int, video_count: int) -> bool:
+        try:
+            conn = self._get_connection()
+            now = datetime.utcnow()
+            next_run = (now + timedelta(hours=interval_hours)).isoformat() if enabled else None
+            conn.execute("""
+                INSERT OR REPLACE INTO scrape_schedules
+                    (niche, enabled, interval_hours, video_count, last_run, next_run)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (niche, int(enabled), interval_hours, video_count, None, next_run))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error saving schedule: {e}")
+            return False
+
+    def get_schedule(self, niche: str) -> Optional[Dict[str, Any]]:
+        try:
+            conn = self._get_connection()
+            row = conn.execute(
+                "SELECT * FROM scrape_schedules WHERE niche = ?", (niche,)
+            ).fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting schedule: {e}")
+            return None
+
+    def get_all_schedules(self) -> List[Dict[str, Any]]:
+        try:
+            conn = self._get_connection()
+            rows = conn.execute(
+                "SELECT * FROM scrape_schedules ORDER BY niche"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error getting schedules: {e}")
+            return []
+
+    def update_schedule_last_run(self, niche: str) -> bool:
+        try:
+            conn = self._get_connection()
+            sched = self.get_schedule(niche)
+            if not sched:
+                return False
+            now = datetime.utcnow()
+            next_run = (now + timedelta(hours=sched["interval_hours"])).isoformat()
+            conn.execute("""
+                UPDATE scrape_schedules
+                SET last_run = ?, next_run = ?
+                WHERE niche = ?
+            """, (now.isoformat(), next_run, niche))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating schedule: {e}")
+            return False
+
     def close(self):
         """Close database connection."""
         if hasattr(self.local, 'connection') and self.local.connection:

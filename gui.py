@@ -1,864 +1,852 @@
 """
-YouTube Niche Analyzer - Modern GUI using CustomTkinter
-A polished, user-friendly interface for analyzing YouTube niches.
+YouTube Niche Analyzer – Modern Tabbed GUI
+Tabs: Analyze · Dashboard · Trends · Settings
 """
 
+import json
+import logging
 import os
 import sys
 import threading
-import logging
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
-import json
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
 from dotenv import load_dotenv, set_key
 
-# Import analyzer modules
 from youtube_analyzer import NicheDataCollector
 from analysis import ComprehensiveAnalyzer
 from blueprint_generator import BlueprintOrchestrator
 from output import OutputManager
 from database import get_db
+from scheduler import ScrapeScheduler
+from trends import get_trend_summary, format_trend_report
 
-# Configure logging for GUI
 logger = logging.getLogger(__name__)
 
+# ─── colour palette ────────────────────────────────────────────────
+C_BG       = "#1a1a2e"
+C_CARD     = "#16213e"
+C_ACCENT   = "#0f3460"
+C_PRIMARY  = "#e94560"
+C_SUCCESS  = "#2ecc71"
+C_WARN     = "#f39c12"
+C_TEXT     = "#eaeaea"
+C_MUTED    = "#7f8c8d"
+C_CHART_BG = "#0d1b2a"
 
-class AnalyzerGUI(ctk.CTk):
-    """Main GUI Application for YouTube Niche Analyzer."""
-    
+
+# ════════════════════════════════════════════════════════════════════
+#  Main application
+# ════════════════════════════════════════════════════════════════════
+class AnalyzerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        
-        # Window configuration
+
         self.title("YouTube Niche Analyzer")
-        self.geometry("1100x750")
-        self.minsize(900, 650)
-        
-        # Set appearance mode
-        self.current_theme = "dark"
+        self.geometry("1200x820")
+        self.minsize(1000, 700)
+
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        
-        # State variables
-        self.analysis_running = False
-        self.analysis_thread: Optional[threading.Thread] = None
-        self.stop_requested = False
-        self.output_files = {}
-        self.output_dir = "output"
-        
-        # Load environment
+
         load_dotenv()
-        
-        # Build UI
-        self._create_layout()
-        self._create_widgets()
-        self._load_saved_settings()
-        
-    def _create_layout(self):
-        """Create the main layout structure."""
+
+        self._analysis_running = False
+        self._output_files: dict = {}
+        self._latest_analysis: Optional[dict] = None
+        self._latest_blueprint: Optional[dict] = None
+        self._latest_videos: Optional[list] = None
+        self._latest_niche: str = ""
+
+        self._scheduler = ScrapeScheduler(run_callback=self._auto_scrape_callback)
+
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
-        self.grid_rowconfigure(2, weight=0)
-        
-    def _create_widgets(self):
-        """Create all UI widgets."""
-        self._create_header()
-        self._create_main_content()
-        self._create_footer()
-        
-    def _create_header(self):
-        """Create header section."""
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 5))
-        header_frame.grid_columnconfigure(1, weight=1)
-        
-        # Title
-        title_label = ctk.CTkLabel(
-            header_frame, 
-            text="YouTube Niche Analyzer",
-            font=ctk.CTkFont(size=28, weight="bold")
-        )
-        title_label.grid(row=0, column=0, sticky="w")
-        
-        # Theme toggle
-        self.theme_btn = ctk.CTkButton(
-            header_frame,
-            text="Theme",
-            width=70,
-            height=35,
-            command=self._toggle_theme
-        )
-        self.theme_btn.grid(row=0, column=2, padx=5)
-        
-        # Settings button
-        settings_btn = ctk.CTkButton(
-            header_frame,
-            text="Settings",
-            width=70,
-            height=35,
-            command=self._open_settings
-        )
-        settings_btn.grid(row=0, column=3)
-        
-    def _create_main_content(self):
-        """Create main content area."""
-        main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        main_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_columnconfigure(1, weight=2)
-        main_frame.grid_rowconfigure(0, weight=1)
-        
-        self._create_input_panel(main_frame)
-        self._create_results_panel(main_frame)
-        
-    def _create_input_panel(self, parent):
-        """Create the input/controls panel."""
-        input_frame = ctk.CTkFrame(parent)
-        input_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        input_frame.grid_columnconfigure(0, weight=1)
-        
-        # Panel header
-        panel_header = ctk.CTkLabel(
-            input_frame,
-            text="Analysis Settings",
-            font=ctk.CTkFont(size=18, weight="bold")
-        )
-        panel_header.grid(row=0, column=0, pady=(15, 20), padx=15, sticky="w")
-        
-        # Niche Input
-        niche_label = ctk.CTkLabel(input_frame, text="YouTube Niche:", font=ctk.CTkFont(size=14))
-        niche_label.grid(row=1, column=0, padx=15, sticky="w")
-        
-        self.niche_entry = ctk.CTkEntry(
-            input_frame,
-            placeholder_text="e.g., AI tutorials, fitness, cooking",
-            height=40,
-            font=ctk.CTkFont(size=14)
-        )
-        self.niche_entry.grid(row=2, column=0, padx=15, pady=(5, 15), sticky="ew")
-        
-        # Video Count Slider
-        video_label = ctk.CTkLabel(input_frame, text="Number of Videos:", font=ctk.CTkFont(size=14))
-        video_label.grid(row=3, column=0, padx=15, sticky="w")
-        
-        slider_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
-        slider_frame.grid(row=4, column=0, padx=15, pady=(5, 15), sticky="ew")
-        slider_frame.grid_columnconfigure(0, weight=1)
-        
+
+        self._build_header()
+        self._build_tabs()
+        self._build_footer()
+
+    # ── header ──────────────────────────────────────────────────────
+    def _build_header(self):
+        hdr = ctk.CTkFrame(self, fg_color="transparent", height=50)
+        hdr.grid(row=0, column=0, sticky="ew", padx=24, pady=(14, 0))
+        hdr.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(hdr, text="YouTube Niche Analyzer",
+                     font=ctk.CTkFont(size=26, weight="bold")).grid(row=0, column=0, sticky="w")
+
+        badge = ctk.CTkLabel(hdr, text="v2.0", font=ctk.CTkFont(size=12),
+                             text_color=C_MUTED)
+        badge.grid(row=0, column=1, sticky="w", padx=(10, 0))
+
+    # ── tabs ────────────────────────────────────────────────────────
+    def _build_tabs(self):
+        self.tabview = ctk.CTkTabview(self, segmented_button_selected_color=C_PRIMARY,
+                                       segmented_button_selected_hover_color="#c0392b")
+        self.tabview.grid(row=1, column=0, sticky="nsew", padx=24, pady=10)
+
+        self._tab_analyze  = self.tabview.add("  Analyze  ")
+        self._tab_dash     = self.tabview.add("  Dashboard  ")
+        self._tab_trends   = self.tabview.add("  Trends  ")
+        self._tab_settings = self.tabview.add("  Settings  ")
+
+        self._build_analyze_tab()
+        self._build_dashboard_tab()
+        self._build_trends_tab()
+        self._build_settings_tab()
+
+    # ── footer ──────────────────────────────────────────────────────
+    def _build_footer(self):
+        ft = ctk.CTkFrame(self, fg_color="transparent", height=28)
+        ft.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
+        ft.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(ft, text="YouTube Niche Analyzer", font=ctk.CTkFont(size=11),
+                     text_color=C_MUTED).grid(row=0, column=0, sticky="w")
+        self._footer_ts = ctk.CTkLabel(ft, text="", font=ctk.CTkFont(size=11),
+                                        text_color=C_MUTED)
+        self._footer_ts.grid(row=0, column=2, sticky="e")
+
+    # ════════════════════════════════════════════════════════════════
+    #  TAB 1 — Analyze
+    # ════════════════════════════════════════════════════════════════
+    def _build_analyze_tab(self):
+        tab = self._tab_analyze
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_columnconfigure(1, weight=2)
+        tab.grid_rowconfigure(0, weight=1)
+
+        # ── left panel (inputs) ──
+        left = ctk.CTkFrame(tab)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(left, text="Analysis Settings",
+                     font=ctk.CTkFont(size=17, weight="bold")).grid(
+            row=0, column=0, padx=16, pady=(14, 16), sticky="w")
+
+        # niche
+        ctk.CTkLabel(left, text="YouTube Niche:", font=ctk.CTkFont(size=13)).grid(
+            row=1, column=0, padx=16, sticky="w")
+        self.niche_entry = ctk.CTkEntry(left, placeholder_text="e.g. AI tutorials, fitness, cooking",
+                                         height=38, font=ctk.CTkFont(size=13))
+        self.niche_entry.grid(row=2, column=0, padx=16, pady=(4, 12), sticky="ew")
+
+        # video count
+        ctk.CTkLabel(left, text="Videos to Analyze:", font=ctk.CTkFont(size=13)).grid(
+            row=3, column=0, padx=16, sticky="w")
+        sf = ctk.CTkFrame(left, fg_color="transparent")
+        sf.grid(row=4, column=0, padx=16, pady=(4, 12), sticky="ew")
+        sf.grid_columnconfigure(0, weight=1)
         self.video_count_var = ctk.IntVar(value=50)
-        self.video_slider = ctk.CTkSlider(
-            slider_frame,
-            from_=10,
-            to=500,
-            variable=self.video_count_var,
-            command=self._on_slider_change,
-            height=20
-        )
+        self.video_slider = ctk.CTkSlider(sf, from_=10, to=300,
+                                           variable=self.video_count_var,
+                                           command=self._on_slider, height=18)
         self.video_slider.grid(row=0, column=0, sticky="ew")
-        
-        self.video_count_label = ctk.CTkLabel(
-            slider_frame,
-            text="50 videos",
-            font=ctk.CTkFont(size=12),
-            width=80
-        )
-        self.video_count_label.grid(row=0, column=1, padx=(10, 0))
-        
-        # API Key Input
-        api_label = ctk.CTkLabel(input_frame, text="YouTube API Key (optional):", font=ctk.CTkFont(size=14))
-        api_label.grid(row=5, column=0, padx=15, sticky="w")
-        
-        self.api_entry = ctk.CTkEntry(
-            input_frame,
-            placeholder_text="Your API key (saved to .env)",
-            height=40,
-            show="*",
-            font=ctk.CTkFont(size=14)
-        )
-        self.api_entry.grid(row=6, column=0, padx=15, pady=(5, 5), sticky="ew")
-        
-        # Show/Hide API key toggle
-        self.show_api_var = ctk.BooleanVar(value=False)
-        show_api_cb = ctk.CTkCheckBox(
-            input_frame,
-            text="Show API Key",
-            variable=self.show_api_var,
-            command=self._toggle_api_visibility,
-            font=ctk.CTkFont(size=12)
-        )
-        show_api_cb.grid(row=7, column=0, padx=15, pady=(0, 15), sticky="w")
-        
-        # Output Directory
-        output_label = ctk.CTkLabel(input_frame, text="Output Directory:", font=ctk.CTkFont(size=14))
-        output_label.grid(row=8, column=0, padx=15, sticky="w")
-        
-        output_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
-        output_frame.grid(row=9, column=0, padx=15, pady=(5, 15), sticky="ew")
-        output_frame.grid_columnconfigure(0, weight=1)
-        
-        self.output_entry = ctk.CTkEntry(
-            output_frame,
-            height=40,
-            font=ctk.CTkFont(size=14)
-        )
-        self.output_entry.grid(row=0, column=0, sticky="ew")
-        self.output_entry.insert(0, "output")
-        
-        browse_btn = ctk.CTkButton(
-            output_frame,
-            text="Browse",
-            width=70,
-            height=40,
-            command=self._browse_output_dir
-        )
-        browse_btn.grid(row=0, column=1, padx=(5, 0))
-        
-        # Options
-        options_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
-        options_frame.grid(row=10, column=0, padx=15, pady=(0, 20), sticky="ew")
-        
-        self.skip_viz_var = ctk.BooleanVar(value=False)
-        skip_viz_cb = ctk.CTkCheckBox(
-            options_frame,
-            text="Skip Visualizations",
-            variable=self.skip_viz_var,
-            font=ctk.CTkFont(size=13)
-        )
-        skip_viz_cb.grid(row=0, column=0, sticky="w")
-        
-        self.force_refresh_var = ctk.BooleanVar(value=False)
-        force_refresh_cb = ctk.CTkCheckBox(
-            options_frame,
-            text="Force Refresh (ignore cache)",
-            variable=self.force_refresh_var,
-            font=ctk.CTkFont(size=13)
-        )
-        force_refresh_cb.grid(row=1, column=0, sticky="w", pady=(5, 0))
-        
-        # Action Buttons
-        button_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
-        button_frame.grid(row=11, column=0, padx=15, pady=(10, 20), sticky="ew")
-        button_frame.grid_columnconfigure(0, weight=1)
-        button_frame.grid_columnconfigure(1, weight=1)
-        
-        self.start_btn = ctk.CTkButton(
-            button_frame,
-            text="Start Analysis",
-            command=self._start_analysis,
-            height=50,
-            font=ctk.CTkFont(size=16, weight="bold"),
-            fg_color="#2d8a4e",
-            hover_color="#236b3c"
-        )
-        self.start_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
-        
-        self.stop_btn = ctk.CTkButton(
-            button_frame,
-            text="Stop",
-            command=self._stop_analysis,
-            height=50,
-            font=ctk.CTkFont(size=16, weight="bold"),
-            fg_color="#c0392b",
-            hover_color="#a02a1f",
-            state="disabled"
-        )
-        self.stop_btn.grid(row=0, column=1, padx=(5, 0), sticky="ew")
-        
-        # Progress Section
-        progress_label = ctk.CTkLabel(input_frame, text="Progress:", font=ctk.CTkFont(size=14))
-        progress_label.grid(row=12, column=0, padx=15, sticky="w")
-        
-        self.progress_bar = ctk.CTkProgressBar(input_frame, height=20)
-        self.progress_bar.grid(row=13, column=0, padx=15, pady=(5, 5), sticky="ew")
-        self.progress_bar.set(0)
-        
-        self.status_label = ctk.CTkLabel(
-            input_frame,
-            text="Ready to analyze",
-            font=ctk.CTkFont(size=12),
-            text_color="gray"
-        )
-        self.status_label.grid(row=14, column=0, padx=15, pady=(0, 15), sticky="w")
-        
-    def _create_results_panel(self, parent):
-        """Create the results display panel."""
-        results_frame = ctk.CTkFrame(parent)
-        results_frame.grid(row=0, column=1, sticky="nsew")
-        results_frame.grid_columnconfigure(0, weight=1)
-        results_frame.grid_rowconfigure(1, weight=1)
-        
-        # Header with output buttons
-        header_frame = ctk.CTkFrame(results_frame, fg_color="transparent")
-        header_frame.grid(row=0, column=0, pady=(15, 10), padx=15, sticky="ew")
-        header_frame.grid_columnconfigure(0, weight=1)
-        
-        results_label = ctk.CTkLabel(
-            header_frame,
-            text="Results & Output",
-            font=ctk.CTkFont(size=18, weight="bold")
-        )
-        results_label.grid(row=0, column=0, sticky="w")
-        
-        # Output file buttons
-        file_btn_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
-        file_btn_frame.grid(row=0, column=1, sticky="e")
-        
-        self.json_btn = ctk.CTkButton(
-            file_btn_frame,
-            text="JSON",
-            width=70,
-            height=32,
-            command=lambda: self._open_output_file("json"),
-            state="disabled"
-        )
-        self.json_btn.grid(row=0, column=0, padx=2)
-        
-        self.csv_btn = ctk.CTkButton(
-            file_btn_frame,
-            text="CSV",
-            width=70,
-            height=32,
-            command=lambda: self._open_output_file("csv"),
-            state="disabled"
-        )
-        self.csv_btn.grid(row=0, column=1, padx=2)
-        
-        self.md_btn = ctk.CTkButton(
-            file_btn_frame,
-            text="Report",
-            width=70,
-            height=32,
-            command=lambda: self._open_output_file("markdown"),
-            state="disabled"
-        )
-        self.md_btn.grid(row=0, column=2, padx=2)
-        
-        self.folder_btn = ctk.CTkButton(
-            file_btn_frame,
-            text="Open Folder",
-            width=90,
-            height=32,
-            command=self._open_output_folder,
-            state="disabled"
-        )
-        self.folder_btn.grid(row=0, column=3, padx=(10, 0))
-        
-        # Results text area
-        self.results_textbox = ctk.CTkTextbox(
-            results_frame,
-            font=ctk.CTkFont(family="Consolas", size=13),
-            wrap="word"
-        )
-        self.results_textbox.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
-        
-        # Welcome message
-        self._display_welcome_message()
-        
-    def _create_footer(self):
-        """Create footer/status bar."""
-        footer_frame = ctk.CTkFrame(self, height=35, fg_color="transparent")
-        footer_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(5, 10))
-        footer_frame.grid_columnconfigure(1, weight=1)
-        
-        version_label = ctk.CTkLabel(
-            footer_frame,
-            text="YouTube Niche Analyzer v1.0",
-            font=ctk.CTkFont(size=11),
-            text_color="gray"
-        )
-        version_label.grid(row=0, column=0, sticky="w")
-        
-        self.timestamp_label = ctk.CTkLabel(
-            footer_frame,
-            text="",
-            font=ctk.CTkFont(size=11),
-            text_color="gray"
-        )
-        self.timestamp_label.grid(row=0, column=2, sticky="e")
-        
-    def _display_welcome_message(self):
-        """Display welcome message in results area."""
-        welcome_text = """
-================================================================================
-                    Welcome to YouTube Niche Analyzer!
-================================================================================
+        self.count_lbl = ctk.CTkLabel(sf, text="50", width=50, font=ctk.CTkFont(size=13))
+        self.count_lbl.grid(row=0, column=1, padx=(8, 0))
 
-This tool helps you analyze YouTube niches to discover:
+        # options
+        self.force_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(left, text="Force refresh (ignore cache)",
+                        variable=self.force_var, font=ctk.CTkFont(size=12)).grid(
+            row=5, column=0, padx=16, pady=(0, 4), sticky="w")
+        self.skipviz_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(left, text="Skip visualisations",
+                        variable=self.skipviz_var, font=ctk.CTkFont(size=12)).grid(
+            row=6, column=0, padx=16, pady=(0, 14), sticky="w")
 
-   * Content strategy patterns (video lengths, upload timing)
-   * Engagement metrics and benchmarks
-   * Competition analysis and market saturation
-   * Growth patterns and trending topics
-   * Actionable content recommendations
+        # buttons
+        bf = ctk.CTkFrame(left, fg_color="transparent")
+        bf.grid(row=7, column=0, padx=16, pady=(0, 10), sticky="ew")
+        bf.grid_columnconfigure(0, weight=1)
+        bf.grid_columnconfigure(1, weight=1)
+        self.start_btn = ctk.CTkButton(bf, text="Start Analysis", height=46,
+                                        font=ctk.CTkFont(size=15, weight="bold"),
+                                        fg_color=C_SUCCESS, hover_color="#27ae60",
+                                        command=self._start_analysis)
+        self.start_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.stop_btn = ctk.CTkButton(bf, text="Stop", height=46,
+                                       font=ctk.CTkFont(size=15, weight="bold"),
+                                       fg_color=C_PRIMARY, hover_color="#c0392b",
+                                       command=self._stop_analysis, state="disabled")
+        self.stop_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
-TO GET STARTED:
+        # progress
+        self.progress = ctk.CTkProgressBar(left, height=16)
+        self.progress.grid(row=8, column=0, padx=16, pady=(6, 2), sticky="ew")
+        self.progress.set(0)
+        self.status_lbl = ctk.CTkLabel(left, text="Ready", font=ctk.CTkFont(size=11),
+                                        text_color=C_MUTED)
+        self.status_lbl.grid(row=9, column=0, padx=16, pady=(0, 4), sticky="w")
 
-   1. Enter a niche (e.g., "AI tutorials", "fitness motivation")
-   2. Adjust the number of videos to analyze (10-500)
-   3. Optionally add your YouTube API key for better data
-   4. Click "Start Analysis"
+        # open-files row
+        of = ctk.CTkFrame(left, fg_color="transparent")
+        of.grid(row=10, column=0, padx=16, pady=(6, 14), sticky="ew")
+        of.grid_columnconfigure((0,1,2,3), weight=1)
+        self.btn_json = ctk.CTkButton(of, text="JSON", width=60, height=30,
+                                       command=lambda: self._open_file("json"), state="disabled")
+        self.btn_csv  = ctk.CTkButton(of, text="CSV", width=60, height=30,
+                                       command=lambda: self._open_file("csv"), state="disabled")
+        self.btn_md   = ctk.CTkButton(of, text="Report", width=60, height=30,
+                                       command=lambda: self._open_file("markdown"), state="disabled")
+        self.btn_folder = ctk.CTkButton(of, text="Folder", width=60, height=30,
+                                         command=self._open_folder, state="disabled")
+        self.btn_json.grid(row=0, column=0, padx=2, sticky="ew")
+        self.btn_csv.grid(row=0, column=1, padx=2, sticky="ew")
+        self.btn_md.grid(row=0, column=2, padx=2, sticky="ew")
+        self.btn_folder.grid(row=0, column=3, padx=2, sticky="ew")
 
-TIPS:
-   * More videos = more accurate analysis (but takes longer)
-   * API key is optional but recommended for best results
-   * Results are cached - use "Force Refresh" for fresh data
+        # ── right panel (results log) ──
+        right = ctk.CTkFrame(tab)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(right, text="Results",
+                     font=ctk.CTkFont(size=17, weight="bold")).grid(
+            row=0, column=0, padx=16, pady=(14, 8), sticky="w")
+        self.log_box = ctk.CTkTextbox(right, font=ctk.CTkFont(family="Menlo", size=12),
+                                       wrap="word")
+        self.log_box.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
+        self._log("Enter a niche and click Start Analysis.\n\nThe analyser will collect videos, "
+                  "compute engagement correlations,\ngenerate a content blueprint, and export reports.", clear=True)
 
-================================================================================
-"""
-        self.results_textbox.delete("1.0", "end")
-        self.results_textbox.insert("1.0", welcome_text)
-        
-    def _load_saved_settings(self):
-        """Load saved settings from .env file."""
+    # ════════════════════════════════════════════════════════════════
+    #  TAB 2 — Dashboard (charts)
+    # ════════════════════════════════════════════════════════════════
+    def _build_dashboard_tab(self):
+        tab = self._tab_dash
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+
+        self._dash_placeholder = ctk.CTkLabel(
+            tab, text="Run an analysis first to see charts here.",
+            font=ctk.CTkFont(size=15), text_color=C_MUTED)
+        self._dash_placeholder.grid(row=0, column=0)
+
+        self._dash_scroll = None
+
+    def _populate_dashboard(self):
+        """Rebuild dashboard charts from latest analysis."""
+        if self._dash_placeholder:
+            self._dash_placeholder.destroy()
+            self._dash_placeholder = None
+
+        if self._dash_scroll:
+            self._dash_scroll.destroy()
+
+        tab = self._tab_dash
+        self._dash_scroll = ctk.CTkScrollableFrame(tab)
+        self._dash_scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self._dash_scroll.grid_columnconfigure((0, 1), weight=1)
+
+        analysis = self._latest_analysis
+        if not analysis:
+            return
+
+        niche = self._latest_niche
+        engagement = analysis.get("engagement", {}).get("engagement_analysis", {})
+        content = analysis.get("content_strategy", {})
+        correlations = analysis.get("correlations", {})
+
+        row = 0
+
+        # ── Title bar ──
+        ctk.CTkLabel(self._dash_scroll, text=f"Dashboard — {niche}",
+                     font=ctk.CTkFont(size=20, weight="bold")).grid(
+            row=row, column=0, columnspan=2, padx=12, pady=(10, 14), sticky="w")
+        row += 1
+
+        # ── Metric cards row ──
+        cards_frame = ctk.CTkFrame(self._dash_scroll, fg_color="transparent")
+        cards_frame.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 10))
+        cards_frame.grid_columnconfigure((0,1,2,3,4), weight=1)
+        metrics = [
+            ("Median Views", f"{engagement.get('median_views', 0):,.0f}"),
+            ("Avg Views", f"{engagement.get('average_views_per_video', 0):,.0f}"),
+            ("Engagement", f"{engagement.get('engagement_benchmarks', {}).get('average_engagement_rate_percent', 0):.2f}%"),
+            ("Videos", f"{engagement.get('total_videos', 0)}"),
+            ("Channels", f"{analysis.get('metadata', {}).get('unique_channels', 0)}"),
+        ]
+        for i, (label, value) in enumerate(metrics):
+            card = ctk.CTkFrame(cards_frame, corner_radius=10)
+            card.grid(row=0, column=i, padx=4, pady=4, sticky="ew")
+            ctk.CTkLabel(card, text=value, font=ctk.CTkFont(size=22, weight="bold")).pack(
+                padx=14, pady=(12, 2))
+            ctk.CTkLabel(card, text=label, font=ctk.CTkFont(size=11),
+                         text_color=C_MUTED).pack(padx=14, pady=(0, 10))
+        row += 1
+
+        # ── Chart: View Distribution pie ──
+        view_dist = engagement.get("view_distribution", {})
+        if view_dist:
+            fig = Figure(figsize=(5, 3.5), dpi=100, facecolor="#2b2b2b")
+            ax = fig.add_subplot(111)
+            labels = ["<1K", "1K-10K", "10K-100K", "100K-1M", "1M+"]
+            values = [view_dist.get(k, 0) for k in ["0_1k", "1k_10k", "10k_100k", "100k_1m", "1m_plus"]]
+            nonzero = [(l, v) for l, v in zip(labels, values) if v > 0]
+            if nonzero:
+                nl, nv = zip(*nonzero)
+                colors = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#3498db"][:len(nv)]
+                wedges, texts, autotexts = ax.pie(nv, labels=nl, autopct="%1.0f%%",
+                                                   colors=colors, textprops={"color": "white", "fontsize": 9})
+                for t in autotexts:
+                    t.set_fontsize(8)
+                ax.set_title("View Distribution", color="white", fontsize=12, pad=10)
+            self._embed_chart(fig, self._dash_scroll, row, 0)
+
+        # ── Chart: Length vs Performance bar ──
+        length_corr = correlations.get("length_vs_performance", {}).get("by_bracket", {})
+        if length_corr:
+            fig2 = Figure(figsize=(5, 3.5), dpi=100, facecolor="#2b2b2b")
+            ax2 = fig2.add_subplot(111)
+            brackets = []
+            medians = []
+            for b, d in length_corr.items():
+                if d.get("count", 0) > 0:
+                    brackets.append(b.replace("(", "\n("))
+                    medians.append(d.get("median_views", 0))
+            if brackets:
+                bar_colors = ["#e74c3c", "#e67e22", "#2ecc71", "#3498db"][:len(brackets)]
+                ax2.bar(brackets, medians, color=bar_colors)
+                ax2.set_ylabel("Median Views", color="white", fontsize=9)
+                ax2.set_title("Video Length vs Views", color="white", fontsize=12, pad=10)
+                ax2.tick_params(colors="white", labelsize=8)
+                ax2.set_facecolor("#1e1e1e")
+                for spine in ax2.spines.values():
+                    spine.set_color("#555")
+            self._embed_chart(fig2, self._dash_scroll, row, 1)
+        row += 1
+
+        # ── Chart: Title Patterns ──
+        title_corr = correlations.get("title_patterns_vs_performance", {}).get("pattern_performance", {})
+        if title_corr:
+            fig3 = Figure(figsize=(10, 3.5), dpi=100, facecolor="#2b2b2b")
+            ax3 = fig3.add_subplot(111)
+            names = []
+            lifts = []
+            for p, d in sorted(title_corr.items(), key=lambda x: x[1].get("view_lift_percent", 0), reverse=True):
+                names.append(p.replace("has_", "").replace("_", " "))
+                lifts.append(d.get("view_lift_percent", 0))
+            bar_colors = [C_SUCCESS if l > 0 else C_PRIMARY for l in lifts]
+            ax3.barh(names, lifts, color=bar_colors)
+            ax3.set_xlabel("View Lift %", color="white", fontsize=9)
+            ax3.set_title("Title Pattern Impact on Views", color="white", fontsize=12, pad=10)
+            ax3.axvline(0, color="#555", linewidth=0.8)
+            ax3.tick_params(colors="white", labelsize=9)
+            ax3.set_facecolor("#1e1e1e")
+            for spine in ax3.spines.values():
+                spine.set_color("#555")
+            fig3.tight_layout(pad=1.5)
+            self._embed_chart(fig3, self._dash_scroll, row, 0, colspan=2)
+            row += 1
+
+        # ── Chart: Upload Day performance ──
+        day_corr = correlations.get("upload_day_vs_performance", {}).get("by_day", {})
+        if day_corr:
+            fig4 = Figure(figsize=(5, 3.5), dpi=100, facecolor="#2b2b2b")
+            ax4 = fig4.add_subplot(111)
+            day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            days = [d for d in day_order if d in day_corr]
+            vals = [day_corr[d].get("median_views", 0) for d in days]
+            if days:
+                ax4.bar([d[:3] for d in days], vals, color="#3498db")
+                ax4.set_ylabel("Median Views", color="white", fontsize=9)
+                ax4.set_title("Upload Day vs Views", color="white", fontsize=12, pad=10)
+                ax4.tick_params(colors="white", labelsize=9)
+                ax4.set_facecolor("#1e1e1e")
+                for spine in ax4.spines.values():
+                    spine.set_color("#555")
+            self._embed_chart(fig4, self._dash_scroll, row, 0)
+
+        # ── Chart: Video length distribution pie ──
+        vlen = content.get("video_lengths", {}).get("distribution", {})
+        if vlen:
+            fig5 = Figure(figsize=(5, 3.5), dpi=100, facecolor="#2b2b2b")
+            ax5 = fig5.add_subplot(111)
+            vl_labels = ["Short (<10m)", "Medium (10-20m)", "Long (20m+)"]
+            vl_vals = [
+                vlen.get("short_form_10min_or_less", {}).get("count", 0),
+                vlen.get("medium_form_10_20min", {}).get("count", 0),
+                vlen.get("long_form_20min_plus", {}).get("count", 0),
+            ]
+            nz = [(l, v) for l, v in zip(vl_labels, vl_vals) if v > 0]
+            if nz:
+                nl, nv = zip(*nz)
+                ax5.pie(nv, labels=nl, autopct="%1.0f%%",
+                        colors=["#e74c3c", "#f1c40f", "#2ecc71"],
+                        textprops={"color": "white", "fontsize": 9})
+                ax5.set_title("Video Length Mix", color="white", fontsize=12, pad=10)
+            self._embed_chart(fig5, self._dash_scroll, row, 1)
+        row += 1
+
+    def _embed_chart(self, fig, parent, row, col, colspan=1):
+        frame = ctk.CTkFrame(parent, corner_radius=10)
+        frame.grid(row=row, column=col, columnspan=colspan, padx=6, pady=6, sticky="ew")
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(padx=4, pady=4)
+        plt.close(fig)
+
+    # ════════════════════════════════════════════════════════════════
+    #  TAB 3 — Trends
+    # ════════════════════════════════════════════════════════════════
+    def _build_trends_tab(self):
+        tab = self._tab_trends
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        # toolbar
+        tb = ctk.CTkFrame(tab, fg_color="transparent")
+        tb.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
+        tb.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(tb, text="Niche:", font=ctk.CTkFont(size=13)).grid(row=0, column=0, padx=(0, 6))
+        self.trend_niche_entry = ctk.CTkEntry(tb, placeholder_text="e.g. cyber security",
+                                               height=34, width=220)
+        self.trend_niche_entry.grid(row=0, column=1, sticky="w")
+        ctk.CTkButton(tb, text="Load Trends", height=34, width=110,
+                       command=self._load_trends).grid(row=0, column=2, padx=(8, 0))
+        ctk.CTkButton(tb, text="Refresh List", height=34, width=110,
+                       command=self._refresh_niche_list).grid(row=0, column=3, padx=(8, 0))
+
+        # content area — split into list + chart
+        content = ctk.CTkFrame(tab, fg_color="transparent")
+        content.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_columnconfigure(1, weight=2)
+        content.grid_rowconfigure(0, weight=1)
+
+        # left: text report
+        self.trend_text = ctk.CTkTextbox(content, font=ctk.CTkFont(family="Menlo", size=12), wrap="word")
+        self.trend_text.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self.trend_text.insert("1.0", "Select a niche and click Load Trends to see historical data.\n\n"
+                                       "Each time you run an analysis, a snapshot is saved automatically.")
+
+        # right: trend chart area
+        self._trend_chart_frame = ctk.CTkFrame(content, corner_radius=10)
+        self._trend_chart_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        self._trend_placeholder = ctk.CTkLabel(self._trend_chart_frame,
+                                                text="Trend charts will appear here",
+                                                text_color=C_MUTED)
+        self._trend_placeholder.pack(expand=True)
+
+    def _refresh_niche_list(self):
+        db = get_db()
+        niches = db.get_all_tracked_niches()
+        if niches:
+            self.trend_text.delete("1.0", "end")
+            self.trend_text.insert("1.0", "Tracked niches:\n\n")
+            for n in niches:
+                snaps = db.get_snapshots(n, limit=1)
+                count_text = f" ({len(db.get_snapshots(n))} snapshots)" if snaps else ""
+                self.trend_text.insert("end", f"  • {n}{count_text}\n")
+        else:
+            self.trend_text.delete("1.0", "end")
+            self.trend_text.insert("1.0", "No snapshots yet. Run an analysis first.")
+
+    def _load_trends(self):
+        niche = self.trend_niche_entry.get().strip()
+        if not niche:
+            messagebox.showwarning("Input needed", "Enter a niche name to load trends.")
+            return
+
+        report = format_trend_report(niche)
+        self.trend_text.delete("1.0", "end")
+        self.trend_text.insert("1.0", report)
+
+        # draw trend chart
+        data = get_trend_summary(niche)
+        if "error" not in data and data.get("snapshot_count", 0) >= 2:
+            self._draw_trend_chart(data)
+
+    def _draw_trend_chart(self, data: dict):
+        for w in self._trend_chart_frame.winfo_children():
+            w.destroy()
+
+        series = data.get("series", {})
+        dates = series.get("dates", [])
+        median_views = series.get("median_views", [])
+        avg_eng = series.get("avg_engagement", [])
+
+        if len(dates) < 2:
+            ctk.CTkLabel(self._trend_chart_frame, text="Need 2+ snapshots for charts",
+                         text_color=C_MUTED).pack(expand=True)
+            return
+
+        fig = Figure(figsize=(6, 5), dpi=100, facecolor="#2b2b2b")
+
+        ax1 = fig.add_subplot(211)
+        ax1.plot(dates, median_views, marker="o", color="#2ecc71", linewidth=2, markersize=5)
+        ax1.set_title("Median Views Over Time", color="white", fontsize=11, pad=8)
+        ax1.set_ylabel("Median Views", color="white", fontsize=9)
+        ax1.tick_params(colors="white", labelsize=8)
+        ax1.set_facecolor("#1e1e1e")
+        for spine in ax1.spines.values():
+            spine.set_color("#555")
+        ax1.tick_params(axis="x", rotation=30)
+        ax1.grid(axis="y", alpha=0.2)
+
+        ax2 = fig.add_subplot(212)
+        ax2.plot(dates, avg_eng, marker="s", color="#3498db", linewidth=2, markersize=5)
+        ax2.set_title("Engagement Rate Over Time", color="white", fontsize=11, pad=8)
+        ax2.set_ylabel("Engagement %", color="white", fontsize=9)
+        ax2.tick_params(colors="white", labelsize=8)
+        ax2.set_facecolor("#1e1e1e")
+        for spine in ax2.spines.values():
+            spine.set_color("#555")
+        ax2.tick_params(axis="x", rotation=30)
+        ax2.grid(axis="y", alpha=0.2)
+
+        fig.tight_layout(pad=2)
+        canvas = FigureCanvasTkAgg(fig, master=self._trend_chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=4, pady=4)
+        plt.close(fig)
+
+    # ════════════════════════════════════════════════════════════════
+    #  TAB 4 — Settings
+    # ════════════════════════════════════════════════════════════════
+    def _build_settings_tab(self):
+        tab = self._tab_settings
+        tab.grid_columnconfigure(0, weight=1)
+
+        scroll = ctk.CTkScrollableFrame(tab)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        scroll.grid_columnconfigure(0, weight=1)
+
+        # ── API key ──
+        sec1 = ctk.CTkFrame(scroll)
+        sec1.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        sec1.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(sec1, text="YouTube API Key",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=14, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(sec1, text="Optional — enables faster collection and higher limits",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).grid(
+            row=1, column=0, padx=14, sticky="w")
+        self.api_entry = ctk.CTkEntry(sec1, placeholder_text="Paste API key here",
+                                       height=38, show="*")
+        self.api_entry.grid(row=2, column=0, padx=14, pady=(6, 12), sticky="ew")
         api_key = os.getenv("YOUTUBE_API_KEY", "")
         if api_key:
             self.api_entry.insert(0, api_key)
-            
-    def _save_api_key(self):
-        """Save API key to .env file."""
-        api_key = self.api_entry.get().strip()
-        if api_key:
-            env_path = Path(".env")
-            if not env_path.exists():
-                env_path.touch()
-            set_key(str(env_path), "YOUTUBE_API_KEY", api_key)
-            
-    def _toggle_theme(self):
-        """Toggle between dark and light theme."""
-        if self.current_theme == "dark":
-            ctk.set_appearance_mode("light")
-            self.current_theme = "light"
-        else:
-            ctk.set_appearance_mode("dark")
-            self.current_theme = "dark"
-            
-    def _toggle_api_visibility(self):
-        """Toggle API key visibility."""
-        if self.show_api_var.get():
-            self.api_entry.configure(show="")
-        else:
-            self.api_entry.configure(show="*")
-            
-    def _on_slider_change(self, value):
-        """Handle slider value change."""
-        count = int(value)
-        self.video_count_label.configure(text=f"{count} videos")
-        
-    def _browse_output_dir(self):
-        """Open directory browser for output path."""
-        directory = filedialog.askdirectory(
-            title="Select Output Directory",
-            initialdir=self.output_entry.get() or "."
-        )
-        if directory:
-            self.output_entry.delete(0, "end")
-            self.output_entry.insert(0, directory)
-            
-    def _open_settings(self):
-        """Open settings dialog."""
-        settings_window = ctk.CTkToplevel(self)
-        settings_window.title("Settings")
-        settings_window.geometry("450x350")
-        settings_window.transient(self)
-        settings_window.grab_set()
-        
-        settings_window.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - 450) // 2
-        y = self.winfo_y() + (self.winfo_height() - 350) // 2
-        settings_window.geometry(f"+{x}+{y}")
-        
-        title = ctk.CTkLabel(
-            settings_window,
-            text="Settings",
-            font=ctk.CTkFont(size=20, weight="bold")
-        )
-        title.pack(pady=(20, 15))
-        
-        # API Key section
-        api_frame = ctk.CTkFrame(settings_window)
-        api_frame.pack(fill="x", padx=20, pady=10)
-        
-        api_label = ctk.CTkLabel(
-            api_frame,
-            text="YouTube Data API Key:",
-            font=ctk.CTkFont(size=13)
-        )
-        api_label.pack(anchor="w", padx=15, pady=(10, 5))
-        
-        api_entry = ctk.CTkEntry(
-            api_frame,
-            height=38,
-            placeholder_text="Enter your API key"
-        )
-        api_entry.pack(fill="x", padx=15, pady=(0, 5))
-        api_entry.insert(0, self.api_entry.get())
-        
-        api_help = ctk.CTkLabel(
-            api_frame,
-            text="Get your API key from Google Cloud Console",
-            font=ctk.CTkFont(size=11),
-            text_color="gray"
-        )
-        api_help.pack(anchor="w", padx=15, pady=(0, 10))
-        
-        # Theme section
-        theme_frame = ctk.CTkFrame(settings_window)
-        theme_frame.pack(fill="x", padx=20, pady=10)
-        
-        theme_label = ctk.CTkLabel(
-            theme_frame,
-            text="Appearance:",
-            font=ctk.CTkFont(size=13)
-        )
-        theme_label.pack(anchor="w", padx=15, pady=(10, 5))
-        
-        theme_var = ctk.StringVar(value=self.current_theme)
-        theme_menu = ctk.CTkOptionMenu(
-            theme_frame,
-            values=["dark", "light", "system"],
-            variable=theme_var,
-            command=lambda v: ctk.set_appearance_mode(v)
-        )
-        theme_menu.pack(anchor="w", padx=15, pady=(0, 10))
-        
-        def save_settings():
-            self.api_entry.delete(0, "end")
-            self.api_entry.insert(0, api_entry.get())
-            self._save_api_key()
-            self.current_theme = theme_var.get()
-            settings_window.destroy()
-            messagebox.showinfo("Settings", "Settings saved successfully!")
-            
-        save_btn = ctk.CTkButton(
-            settings_window,
-            text="Save Settings",
-            command=save_settings,
-            height=40,
-            font=ctk.CTkFont(size=14)
-        )
-        save_btn.pack(pady=20)
-        
-    def _update_status(self, message: str, progress: float = None):
-        """Update status label and progress bar."""
-        self.status_label.configure(text=message)
-        if progress is not None:
-            self.progress_bar.set(progress)
-        self.update_idletasks()
-        
-    def _log_result(self, message: str, clear: bool = False):
-        """Log message to results textbox."""
-        if clear:
-            self.results_textbox.delete("1.0", "end")
-        self.results_textbox.insert("end", message + "\n")
-        self.results_textbox.see("end")
-        self.update_idletasks()
-        
-    def _validate_inputs(self) -> bool:
-        """Validate user inputs before starting analysis."""
-        niche = self.niche_entry.get().strip()
-        
+
+        ctk.CTkButton(sec1, text="Save API Key", height=36, width=130,
+                       command=self._save_api_key).grid(
+            row=3, column=0, padx=14, pady=(0, 14), sticky="w")
+
+        # ── Auto-scrape ──
+        sec2 = ctk.CTkFrame(scroll)
+        sec2.grid(row=1, column=0, sticky="ew", padx=8, pady=8)
+        sec2.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(sec2, text="Auto-Scrape Scheduler",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=14, pady=(12, 4), sticky="w", columnspan=3)
+        ctk.CTkLabel(sec2, text="Automatically re-scrape niches at a set interval to track trends over time",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).grid(
+            row=1, column=0, padx=14, sticky="w", columnspan=3)
+
+        af = ctk.CTkFrame(sec2, fg_color="transparent")
+        af.grid(row=2, column=0, padx=14, pady=(8, 4), sticky="ew", columnspan=3)
+        af.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(af, text="Niche:", font=ctk.CTkFont(size=12)).grid(row=0, column=0, padx=(0, 6))
+        self.sched_niche = ctk.CTkEntry(af, placeholder_text="e.g. cyber security", height=34, width=200)
+        self.sched_niche.grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(af, text="Every:", font=ctk.CTkFont(size=12)).grid(row=0, column=2, padx=(12, 6))
+        self.sched_hours = ctk.CTkEntry(af, placeholder_text="24", height=34, width=60)
+        self.sched_hours.grid(row=0, column=3)
+        ctk.CTkLabel(af, text="hours", font=ctk.CTkFont(size=12)).grid(row=0, column=4, padx=(4, 0))
+
+        bf = ctk.CTkFrame(sec2, fg_color="transparent")
+        bf.grid(row=3, column=0, padx=14, pady=(6, 6), sticky="ew", columnspan=3)
+        ctk.CTkButton(bf, text="Add Schedule", height=34, width=120, fg_color=C_SUCCESS,
+                       hover_color="#27ae60", command=self._add_schedule).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bf, text="Remove", height=34, width=100, fg_color=C_PRIMARY,
+                       hover_color="#c0392b", command=self._remove_schedule).pack(side="left", padx=(0, 6))
+
+        self.sched_toggle_var = ctk.BooleanVar(value=False)
+        self.sched_toggle = ctk.CTkSwitch(bf, text="Scheduler On", variable=self.sched_toggle_var,
+                                           command=self._toggle_scheduler)
+        self.sched_toggle.pack(side="left", padx=(12, 0))
+
+        self.sched_list_box = ctk.CTkTextbox(sec2, height=120,
+                                              font=ctk.CTkFont(family="Menlo", size=11))
+        self.sched_list_box.grid(row=4, column=0, padx=14, pady=(4, 14), sticky="ew", columnspan=3)
+        self._refresh_schedule_list()
+
+        # ── Appearance ──
+        sec3 = ctk.CTkFrame(scroll)
+        sec3.grid(row=2, column=0, sticky="ew", padx=8, pady=8)
+        sec3.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(sec3, text="Appearance",
+                     font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=14, pady=(12, 4), sticky="w")
+        tf = ctk.CTkFrame(sec3, fg_color="transparent")
+        tf.grid(row=1, column=0, padx=14, pady=(4, 14), sticky="w")
+        ctk.CTkLabel(tf, text="Theme:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(tf, values=["dark", "light", "system"], width=120,
+                           command=lambda v: ctk.set_appearance_mode(v)).pack(side="left")
+
+    # ── schedule helpers ──
+    def _add_schedule(self):
+        niche = self.sched_niche.get().strip()
+        hours_str = self.sched_hours.get().strip() or "24"
         if not niche:
-            messagebox.showerror("Input Error", "Please enter a YouTube niche to analyze.")
-            self.niche_entry.focus()
-            return False
-            
-        if len(niche) < 2:
-            messagebox.showerror("Input Error", "Niche name must be at least 2 characters.")
-            self.niche_entry.focus()
-            return False
-            
-        video_count = self.video_count_var.get()
-        if video_count < 10 or video_count > 500:
-            messagebox.showerror("Input Error", "Video count must be between 10 and 500.")
-            return False
-            
-        return True
-        
-    def _start_analysis(self):
-        """Start the analysis process."""
-        if not self._validate_inputs():
+            messagebox.showwarning("Input needed", "Enter a niche name.")
             return
-            
-        if self.api_entry.get().strip():
-            self._save_api_key()
-            
-        self.analysis_running = True
-        self.stop_requested = False
+        try:
+            hours = max(1, int(hours_str))
+        except ValueError:
+            hours = 24
+        ScrapeScheduler.add_schedule(niche, interval_hours=hours, video_count=50, enabled=True)
+        self._refresh_schedule_list()
+
+    def _remove_schedule(self):
+        niche = self.sched_niche.get().strip()
+        if niche:
+            ScrapeScheduler.remove_schedule(niche)
+            self._refresh_schedule_list()
+
+    def _toggle_scheduler(self):
+        if self.sched_toggle_var.get():
+            self._scheduler.start()
+            self.sched_toggle.configure(text="Scheduler On")
+        else:
+            self._scheduler.stop()
+            self.sched_toggle.configure(text="Scheduler Off")
+
+    def _refresh_schedule_list(self):
+        schedules = ScrapeScheduler.get_all()
+        self.sched_list_box.delete("1.0", "end")
+        if not schedules:
+            self.sched_list_box.insert("1.0", "No schedules configured.")
+            return
+        for s in schedules:
+            status = "ON" if s.get("enabled") else "OFF"
+            last = s.get("last_run", "never")
+            if last and last != "never":
+                last = last[:16].replace("T", " ")
+            else:
+                last = "never"
+            nxt = s.get("next_run", "—")
+            if nxt:
+                nxt = nxt[:16].replace("T", " ")
+            self.sched_list_box.insert("end",
+                f"[{status}] {s['niche']}  —  every {s['interval_hours']}h  "
+                f"| last: {last} | next: {nxt}\n")
+
+    def _auto_scrape_callback(self, niche: str, video_count: int):
+        """Called by scheduler in background thread."""
+        try:
+            logger.info(f"Auto-scrape running for '{niche}'")
+            api_key = os.getenv("YOUTUBE_API_KEY") or None
+            collector = NicheDataCollector(api_key=api_key)
+            videos = collector.collect_niche_data(niche, num_videos=video_count, force_refresh=True)
+            if not videos:
+                return
+            analyzer = ComprehensiveAnalyzer()
+            analysis = analyzer.analyze_niche(videos)
+            orchestrator = BlueprintOrchestrator()
+            blueprint = orchestrator.generate_complete_blueprint(analysis, niche)
+            db = get_db()
+            db.save_snapshot(niche, analysis, blueprint, len(videos))
+            db.cache_niche_analysis(niche, analysis, len(videos))
+            logger.info(f"Auto-scrape complete for '{niche}' — {len(videos)} videos")
+        except Exception as e:
+            logger.error(f"Auto-scrape error for '{niche}': {e}")
+
+    # ── settings helpers ──
+    def _save_api_key(self):
+        key = self.api_entry.get().strip()
+        env_path = Path(".env")
+        if not env_path.exists():
+            env_path.touch()
+        if key:
+            set_key(str(env_path), "YOUTUBE_API_KEY", key)
+            messagebox.showinfo("Saved", "API key saved to .env")
+        else:
+            set_key(str(env_path), "YOUTUBE_API_KEY", "")
+            messagebox.showinfo("Cleared", "API key cleared.")
+
+    # ════════════════════════════════════════════════════════════════
+    #  Analysis pipeline
+    # ════════════════════════════════════════════════════════════════
+    def _on_slider(self, val):
+        self.count_lbl.configure(text=str(int(val)))
+
+    def _start_analysis(self):
+        niche = self.niche_entry.get().strip()
+        if not niche:
+            messagebox.showwarning("Input needed", "Enter a niche to analyse.")
+            return
+        self._analysis_running = True
+        self._stop_requested = False
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.output_files = {}
-        self._disable_output_buttons()
-        
-        self.analysis_thread = threading.Thread(target=self._run_analysis, daemon=True)
-        self.analysis_thread.start()
-        
+        self._output_files = {}
+        for b in (self.btn_json, self.btn_csv, self.btn_md, self.btn_folder):
+            b.configure(state="disabled")
+        threading.Thread(target=self._run_analysis, daemon=True).start()
+
     def _stop_analysis(self):
-        """Request to stop the analysis."""
-        self.stop_requested = True
-        self._update_status("Stopping analysis...", None)
+        self._stop_requested = True
         self.stop_btn.configure(state="disabled")
-        
+
     def _run_analysis(self):
-        """Run the analysis (in background thread)."""
         try:
             niche = self.niche_entry.get().strip()
-            video_count = self.video_count_var.get()
-            api_key = self.api_entry.get().strip() or None
-            output_dir = self.output_entry.get().strip() or "output"
-            skip_viz = self.skip_viz_var.get()
-            force_refresh = self.force_refresh_var.get()
-            
-            self.output_dir = output_dir
-            
-            self.after(0, lambda: self._log_result(f"""
-================================================================================
-                          Starting Analysis
-================================================================================
+            count = self.video_count_var.get()
+            api_key = self.api_entry.get().strip() or os.getenv("YOUTUBE_API_KEY") or None
+            force = self.force_var.get()
+            skip_viz = self.skipviz_var.get()
 
-Niche: {niche}
-Videos to analyze: {video_count}
-Output directory: {output_dir}
-Force refresh: {'Yes' if force_refresh else 'No'}
-Generate visualizations: {'No' if skip_viz else 'Yes'}
+            self.after(0, lambda: self._log(
+                f"{'=' * 56}\n  Starting Analysis: {niche}\n"
+                f"  Videos: {count} | Force refresh: {force}\n{'=' * 56}\n", clear=True))
 
-================================================================================
-""", clear=True))
-            
-            # Stage 1: Initialize
-            self.after(0, lambda: self._update_status("Initializing...", 0.05))
-            self.after(0, lambda: self._log_result("[OK] Initializing analyzer..."))
-            
-            if self.stop_requested:
-                raise InterruptedError("Analysis stopped by user")
-            
-            # Stage 2: Collect data
-            self.after(0, lambda: self._update_status("Collecting video data...", 0.1))
-            self.after(0, lambda: self._log_result("[OK] Searching for videos and fetching metadata..."))
-            
+            self.after(0, lambda: self._set_status("Collecting video data…", 0.08))
             collector = NicheDataCollector(api_key=api_key)
-            video_data = collector.collect_niche_data(niche, num_videos=video_count, force_refresh=force_refresh)
-            
-            if self.stop_requested:
-                raise InterruptedError("Analysis stopped by user")
-            
-            if not video_data:
-                self.after(0, lambda: self._log_result("\n[ERROR] Could not collect any video data."))
-                self.after(0, lambda: self._log_result("        Check your niche name and API key."))
-                raise ValueError("No video data collected")
-            
-            self.after(0, lambda: self._log_result(f"     -> Found and enriched {len(video_data)} videos"))
-            
-            # Stage 3: Analysis
-            self.after(0, lambda: self._update_status("Analyzing content strategy...", 0.3))
-            self.after(0, lambda: self._log_result("\n[OK] Running comprehensive analysis..."))
-            
+            videos = collector.collect_niche_data(niche, num_videos=count, force_refresh=force)
+
+            if not videos:
+                self.after(0, lambda: self._log("\n[ERROR] No video data collected."))
+                return
+
+            self.after(0, lambda: self._log(f"  ✓ Collected {len(videos)} videos"))
+            self.after(0, lambda: self._set_status("Running analysis…", 0.35))
+
             analyzer = ComprehensiveAnalyzer()
-            analysis_results = analyzer.analyze_niche(video_data)
-            
-            if self.stop_requested:
-                raise InterruptedError("Analysis stopped by user")
-            
-            self.after(0, lambda: self._log_result("     -> Content strategy analysis complete"))
-            self.after(0, lambda: self._update_status("Analyzing engagement metrics...", 0.45))
-            self.after(0, lambda: self._log_result("     -> Engagement metrics analysis complete"))
-            
-            db = get_db()
-            db.cache_niche_analysis(niche, analysis_results, len(video_data))
-            
-            self.after(0, lambda: self._update_status("Analyzing competition...", 0.55))
-            self.after(0, lambda: self._log_result("     -> Competition analysis complete"))
-            self.after(0, lambda: self._update_status("Analyzing growth patterns...", 0.65))
-            self.after(0, lambda: self._log_result("     -> Growth pattern analysis complete"))
-            
-            if self.stop_requested:
-                raise InterruptedError("Analysis stopped by user")
-            
-            # Stage 4: Generate blueprint
-            self.after(0, lambda: self._update_status("Generating content blueprint...", 0.7))
-            self.after(0, lambda: self._log_result("\n[OK] Generating content strategy blueprint..."))
-            
+            analysis = analyzer.analyze_niche(videos)
+
+            self.after(0, lambda: self._log("  ✓ Analysis complete"))
+            self.after(0, lambda: self._set_status("Generating blueprint…", 0.6))
+
             orchestrator = BlueprintOrchestrator()
-            blueprint = orchestrator.generate_complete_blueprint(analysis_results, niche)
-            
-            if self.stop_requested:
-                raise InterruptedError("Analysis stopped by user")
-            
-            # Stage 5: Visualizations
-            output_manager = OutputManager(output_dir=output_dir)
-            
+            blueprint = orchestrator.generate_complete_blueprint(analysis, niche)
+            self.after(0, lambda: self._log("  ✓ Blueprint generated"))
+
+            # save snapshot for trends
+            db = get_db()
+            db.save_snapshot(niche, analysis, blueprint, len(videos))
+            db.cache_niche_analysis(niche, analysis, len(videos))
+
+            # export
+            self.after(0, lambda: self._set_status("Exporting reports…", 0.8))
+            output_mgr = OutputManager(output_dir="output")
+
             if not skip_viz:
-                self.after(0, lambda: self._update_status("Creating visualizations...", 0.8))
-                self.after(0, lambda: self._log_result("\n[OK] Creating visualizations..."))
-                
-                viz_files = output_manager.generate_visualizations(analysis_results, video_data, niche)
-                self.after(0, lambda: self._log_result(f"     -> Created {len(viz_files)} visualization files"))
-            else:
-                self.after(0, lambda: self._log_result("\n[SKIP] Skipped visualization generation"))
-            
-            if self.stop_requested:
-                raise InterruptedError("Analysis stopped by user")
-            
-            # Stage 6: Export
-            self.after(0, lambda: self._update_status("Exporting reports...", 0.9))
-            self.after(0, lambda: self._log_result("\n[OK] Exporting reports..."))
-            
-            json_file = output_manager.export_json(
-                {
-                    "analysis": analysis_results,
-                    "blueprint": blueprint,
-                    "metadata": {
-                        "niche": niche,
-                        "total_videos": len(video_data),
-                        "generated_at": datetime.utcnow().isoformat()
-                    }
-                },
-                filename=f"complete_analysis_{niche.replace(' ', '_')}"
-            )
-            self.output_files["json"] = json_file
-            
-            csv_file = output_manager.export_csv(video_data, filename=f"videos_{niche.replace(' ', '_')}")
-            self.output_files["csv"] = csv_file
-            
-            md_file = output_manager.export_markdown_report(
-                analysis_results, blueprint, video_data, niche
-            )
-            self.output_files["markdown"] = md_file
-            
-            self.after(0, lambda: self._log_result("     -> Exported JSON, CSV, and Markdown reports"))
-            
-            self.after(0, lambda: self._update_status("Analysis complete!", 1.0))
-            
-            self._display_summary(analysis_results, blueprint, video_data, niche)
-            self.after(0, self._enable_output_buttons)
-            
-        except InterruptedError as e:
-            self.after(0, lambda: self._log_result(f"\n[STOPPED] {str(e)}"))
-            self.after(0, lambda: self._update_status("Analysis stopped", None))
+                viz = output_mgr.generate_visualizations(analysis, videos, niche)
+                self.after(0, lambda: self._log(f"  ✓ {len(viz)} visualisations created"))
+
+            json_f = output_mgr.export_json(
+                {"analysis": analysis, "blueprint": blueprint,
+                 "metadata": {"niche": niche, "total_videos": len(videos),
+                              "generated_at": datetime.utcnow().isoformat()}},
+                filename=f"complete_analysis_{niche.replace(' ', '_')}")
+            csv_f = output_mgr.export_csv(videos, filename=f"videos_{niche.replace(' ', '_')}")
+            md_f = output_mgr.export_markdown_report(analysis, blueprint, videos, niche)
+
+            self._output_files = {"json": json_f, "csv": csv_f, "markdown": md_f}
+            self.after(0, lambda: self._log("  ✓ Reports exported"))
+
+            # store for dashboard
+            self._latest_analysis = analysis
+            self._latest_blueprint = blueprint
+            self._latest_videos = videos
+            self._latest_niche = niche
+
+            self.after(0, lambda: self._set_status("Complete!", 1.0))
+            self.after(0, self._show_summary)
+            self.after(0, self._populate_dashboard)
+            self.after(0, self._enable_file_buttons)
+            self.after(0, lambda: self._footer_ts.configure(
+                text=f"Last: {datetime.now().strftime('%Y-%m-%d %H:%M')}"))
+
         except Exception as e:
             logger.exception(f"Analysis error: {e}")
-            self.after(0, lambda: self._log_result(f"\n[ERROR] {str(e)}"))
-            self.after(0, lambda: self._update_status(f"Error: {str(e)[:50]}...", None))
+            self.after(0, lambda: self._log(f"\n[ERROR] {e}"))
+            self.after(0, lambda: self._set_status(f"Error", None))
         finally:
-            self.analysis_running = False
+            self._analysis_running = False
             self.after(0, lambda: self.start_btn.configure(state="normal"))
             self.after(0, lambda: self.stop_btn.configure(state="disabled"))
-            
-    def _display_summary(self, analysis: dict, blueprint: dict, videos: list, niche: str):
-        """Display analysis summary in results area."""
-        metadata = analysis.get("metadata", {})
-        engagement = analysis.get("engagement", {}).get("engagement_analysis", {})
-        content_strat = analysis.get("content_strategy", {})
-        competition = analysis.get("competition", {}).get("competitive_landscape", {})
-        strategy = blueprint.get("video_strategy", {})
-        
-        avg_views = engagement.get("average_views_per_video", 0)
-        if isinstance(avg_views, (int, float)):
-            avg_views_str = f"{avg_views:,.0f}"
-        else:
-            avg_views_str = "N/A"
-        
-        video_len = content_strat.get("video_lengths", {}).get("distribution", {})
-        dominant_format = "Unknown"
-        if video_len:
-            formats = [
-                ("Short-form (<10 min)", video_len.get("short_form_10min_or_less", {}).get("percentage", 0)),
-                ("Medium-form (10-20 min)", video_len.get("medium_form_10_20min", {}).get("percentage", 0)),
-                ("Long-form (20+ min)", video_len.get("long_form_20min_plus", {}).get("percentage", 0))
-            ]
-            dominant = max(formats, key=lambda x: x[1])
-            dominant_format = f"{dominant[0]} ({dominant[1]:.1f}%)"
-        
-        summary = f"""
 
-================================================================================
-                          Analysis Complete!
-================================================================================
+    def _show_summary(self):
+        a = self._latest_analysis
+        b = self._latest_blueprint
+        if not a:
+            return
+        eng = a.get("engagement", {}).get("engagement_analysis", {})
+        bm = eng.get("engagement_benchmarks", {})
+        comp = a.get("competition", {}).get("competitive_landscape", {})
+        strat = b.get("video_strategy", {}) if b else {}
 
-KEY FINDINGS
---------------------------------------------------------------------------------
+        self._log(f"\n{'─' * 56}")
+        self._log(f"  KEY FINDINGS")
+        self._log(f"{'─' * 56}")
+        self._log(f"  Median Views:    {eng.get('median_views', 0):>12,.0f}")
+        self._log(f"  Avg Views:       {eng.get('average_views_per_video', 0):>12,.0f}")
+        self._log(f"  Engagement:      {bm.get('average_engagement_rate_percent', 0):>11.2f}%")
+        self._log(f"  Saturation:      {comp.get('market_saturation', 'N/A'):>12}")
+        self._log(f"\n  STRATEGY")
+        self._log(f"  Length:          {strat.get('optimal_video_length', 'N/A')}")
+        self._log(f"  Frequency:       {strat.get('recommended_upload_frequency', 'N/A')}")
+        self._log(f"  Best Day:        {strat.get('best_upload_day', 'N/A')}")
+        self._log(f"\n  → Switch to Dashboard tab for visual charts")
+        self._log(f"  → Reports saved to output/ folder\n")
 
-  * Videos Analyzed: {len(videos)}
-  * Unique Channels: {metadata.get('unique_channels', 'N/A')}
-  * Average Views per Video: {avg_views_str}
-  * Market Saturation: {competition.get('market_saturation', 'Unknown')}
-  * Dominant Format: {dominant_format}
+    # ── UI helpers ──
+    def _log(self, msg, clear=False):
+        if clear:
+            self.log_box.delete("1.0", "end")
+        self.log_box.insert("end", msg + "\n")
+        self.log_box.see("end")
 
-RECOMMENDED STRATEGY
---------------------------------------------------------------------------------
+    def _set_status(self, msg, progress=None):
+        self.status_lbl.configure(text=msg)
+        if progress is not None:
+            self.progress.set(progress)
 
-  * Optimal Length: {strategy.get('optimal_video_length', 'N/A')}
-  * Upload Frequency: {strategy.get('recommended_upload_frequency', 'N/A')}
-  * Best Upload Day: {strategy.get('best_upload_day', 'N/A')}
-  * Best Upload Time: {strategy.get('best_upload_time', 'N/A')}
+    def _enable_file_buttons(self):
+        for key, btn in [("json", self.btn_json), ("csv", self.btn_csv),
+                          ("markdown", self.btn_md)]:
+            if self._output_files.get(key):
+                btn.configure(state="normal")
+        self.btn_folder.configure(state="normal")
 
-GENERATED FILES
---------------------------------------------------------------------------------
-
-  JSON Analysis: {self.output_files.get('json', 'N/A')}
-  CSV Data: {self.output_files.get('csv', 'N/A')}
-  Markdown Report: {self.output_files.get('markdown', 'N/A')}
-
-Click the buttons above to open the generated files!
-
-================================================================================
-"""
-        self.after(0, lambda: self._log_result(summary))
-        self.after(0, lambda: self.timestamp_label.configure(
-            text=f"Last analysis: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        ))
-        
-    def _enable_output_buttons(self):
-        """Enable output file buttons."""
-        if self.output_files.get("json"):
-            self.json_btn.configure(state="normal")
-        if self.output_files.get("csv"):
-            self.csv_btn.configure(state="normal")
-        if self.output_files.get("markdown"):
-            self.md_btn.configure(state="normal")
-        self.folder_btn.configure(state="normal")
-        
-    def _disable_output_buttons(self):
-        """Disable output file buttons."""
-        self.json_btn.configure(state="disabled")
-        self.csv_btn.configure(state="disabled")
-        self.md_btn.configure(state="disabled")
-        self.folder_btn.configure(state="disabled")
-        
-    def _open_output_file(self, file_type: str):
-        """Open an output file."""
-        filepath = self.output_files.get(file_type)
-        if filepath and Path(filepath).exists():
-            if sys.platform == "win32":
-                os.startfile(filepath)
-            elif sys.platform == "darwin":
-                os.system(f'open "{filepath}"')
+    def _open_file(self, ftype):
+        fp = self._output_files.get(ftype)
+        if fp and Path(fp).exists():
+            if sys.platform == "darwin":
+                os.system(f'open "{fp}"')
+            elif sys.platform == "win32":
+                os.startfile(fp)
             else:
-                os.system(f'xdg-open "{filepath}"')
-        else:
-            messagebox.showwarning("File Not Found", f"Could not find the {file_type} file.")
-            
-    def _open_output_folder(self):
-        """Open the output folder."""
-        output_path = Path(self.output_dir)
-        if output_path.exists():
-            if sys.platform == "win32":
-                os.startfile(str(output_path))
-            elif sys.platform == "darwin":
-                os.system(f'open "{output_path}"')
+                os.system(f'xdg-open "{fp}"')
+
+    def _open_folder(self):
+        p = Path("output")
+        if p.exists():
+            if sys.platform == "darwin":
+                os.system(f'open "{p}"')
+            elif sys.platform == "win32":
+                os.startfile(str(p))
             else:
-                os.system(f'xdg-open "{output_path}"')
-        else:
-            messagebox.showwarning("Folder Not Found", "Output folder does not exist yet.")
+                os.system(f'xdg-open "{p}"')
 
 
 def launch_gui():
-    """Launch the GUI application."""
-    app = AnalyzerGUI()
+    app = AnalyzerApp()
     app.mainloop()
 
 
