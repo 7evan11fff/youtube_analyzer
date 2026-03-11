@@ -218,52 +218,44 @@ class OutputManager:
                         elif isinstance(idea, str):
                             f.write(f"- {idea}\n\n")
                 
-                # What Works
+                # What Works (data-driven)
                 f.write("## What Works in This Niche\n\n")
+                f.write("*Based on comparing top-performing vs underperforming videos in this dataset.*\n\n")
                 works = blueprint.get("what_works", {})
                 if not isinstance(works, dict):
                     works = {}
-                
-                f.write("### Top Engagement Drivers\n")
-                engagement_drivers = works.get("top_engagement_drivers", [])
-                if isinstance(engagement_drivers, list):
-                    for item in engagement_drivers:
-                        f.write(f"- {item}\n")
-                f.write("\n")
-                
-                f.write("### Top Title Formulas\n")
-                title_formulas = works.get("top_title_formulas", [])
-                if isinstance(title_formulas, list):
-                    for item in title_formulas:
-                        f.write(f"- {item}\n")
-                f.write("\n")
-                
-                f.write("### Best Content Structures\n")
-                content_structures = works.get("top_content_structures", [])
-                if isinstance(content_structures, list):
-                    for item in content_structures:
-                        f.write(f"- {item}\n")
-                f.write("\n")
-                
-                # What Doesn't Work
+
+                for section_key, section_title in [
+                    ("engagement_drivers", "Engagement & Performance"),
+                    ("title_strategies", "Title Strategies"),
+                    ("format_insights", "Format & Length"),
+                    ("best_practices", "Best Practices"),
+                ]:
+                    items = works.get(section_key, [])
+                    if items:
+                        f.write(f"### {section_title}\n")
+                        for item in items:
+                            f.write(f"- {item}\n")
+                        f.write("\n")
+
+                # What Doesn't Work (data-driven)
                 f.write("## What Doesn't Work - Avoid These Mistakes\n\n")
+                f.write("*Patterns found in the bottom 25% of videos by view count.*\n\n")
                 doesnt_work = blueprint.get("what_doesnt_work", {})
                 if not isinstance(doesnt_work, dict):
                     doesnt_work = {}
-                
-                f.write("### Engagement Killers\n")
-                engagement_killers = doesnt_work.get("engagement_killers", [])
-                if isinstance(engagement_killers, list):
-                    for item in engagement_killers:
-                        f.write(f"- {item}\n")
-                f.write("\n")
-                
-                f.write("### Common Creator Mistakes\n")
-                creator_mistakes = doesnt_work.get("common_creator_mistakes", [])
-                if isinstance(creator_mistakes, list):
-                    for item in creator_mistakes:
-                        f.write(f"- {item}\n")
-                f.write("\n")
+
+                for section_key, section_title in [
+                    ("content_warnings", "Content & Strategy Issues"),
+                    ("title_warnings", "Title Problems"),
+                    ("format_warnings", "Format Issues"),
+                ]:
+                    items = doesnt_work.get(section_key, [])
+                    if items:
+                        f.write(f"### {section_title}\n")
+                        for item in items:
+                            f.write(f"- {item}\n")
+                        f.write("\n")
                 
                 # Competitive Positioning
                 f.write("## Competitive Positioning\n\n")
@@ -395,6 +387,73 @@ class OutputManager:
                             f.write(f"- {channel}\n")
                 f.write("\n")
                 
+                # Performance Correlations
+                correlations = analysis.get("correlations", {})
+                if correlations:
+                    f.write("### Performance Correlations\n\n")
+                    f.write("*What actually drives views in this niche, based on the data.*\n\n")
+
+                    length_corr = correlations.get("length_vs_performance", {})
+                    if length_corr.get("by_bracket"):
+                        f.write("#### Video Length vs Views\n")
+                        f.write("| Length | Videos | Median Views | Avg Engagement |\n")
+                        f.write("|--------|--------|-------------|----------------|\n")
+                        for bracket, data in length_corr["by_bracket"].items():
+                            if data.get("count", 0) > 0:
+                                f.write(f"| {bracket} | {data['count']} | {data.get('median_views', 0):,} | {data.get('avg_engagement', 0):.2f}% |\n")
+                        best = length_corr.get("best_performing_length", "")
+                        if best:
+                            f.write(f"\n**Best performing length:** {best}\n\n")
+
+                    title_corr = correlations.get("title_patterns_vs_performance", {})
+                    positive = title_corr.get("positive_patterns", [])
+                    negative = title_corr.get("negative_patterns", [])
+                    if positive or negative:
+                        f.write("#### Title Patterns vs Views\n")
+                        if positive:
+                            f.write("\n**Patterns that boost views:**\n")
+                            for p in positive[:5]:
+                                name = p["pattern"].replace("has_", "").replace("_", " ")
+                                f.write(f"- {name}: +{p['view_lift_percent']:.0f}% views ({p['count_with']} videos)\n")
+                        if negative:
+                            f.write("\n**Patterns that hurt views:**\n")
+                            for p in negative[:5]:
+                                name = p["pattern"].replace("has_", "").replace("_", " ")
+                                f.write(f"- {name}: {p['view_lift_percent']:.0f}% views ({p['count_with']} videos)\n")
+                        f.write("\n")
+
+                    day_corr = correlations.get("upload_day_vs_performance", {})
+                    if day_corr.get("by_day"):
+                        f.write("#### Upload Day vs Views\n")
+                        f.write("| Day | Videos | Median Views |\n")
+                        f.write("|-----|--------|-------------|\n")
+                        sorted_days = sorted(
+                            day_corr["by_day"].items(),
+                            key=lambda x: x[1].get("median_views", 0),
+                            reverse=True,
+                        )
+                        for day, data in sorted_days:
+                            if data.get("count", 0) > 0:
+                                f.write(f"| {day} | {data['count']} | {data.get('median_views', 0):,} |\n")
+                        f.write(f"\n**Best day:** {day_corr.get('best_day', 'N/A')} | **Worst day:** {day_corr.get('worst_day', 'N/A')}\n\n")
+
+                # Niche Topics
+                niche_topics = analysis.get("competition", {}).get("niche_topics", [])
+                if niche_topics:
+                    f.write("### Key Niche Topics\n\n")
+                    phrases = [t for t in niche_topics if t.get("type") == "phrase"]
+                    keywords = [t for t in niche_topics if t.get("type") == "keyword"]
+                    if phrases:
+                        f.write("**Trending Phrases:**\n")
+                        for t in phrases[:8]:
+                            f.write(f"- \"{t['topic']}\" ({t['frequency']} mentions)\n")
+                        f.write("\n")
+                    if keywords:
+                        f.write("**Key Topics:**\n")
+                        for t in keywords[:8]:
+                            f.write(f"- {t['topic']} ({t['frequency']} mentions)\n")
+                        f.write("\n")
+
                 # Footer
                 f.write("---\n\n")
                 f.write("*Report generated by YouTube Niche Analyzer*\n")
@@ -449,14 +508,17 @@ class OutputManager:
         
         try:
             # 2. Engagement Metrics Box Plot
+            from data_cleaning import safe_int
             video_data = []
             for video in videos:
-                views = video.get("view_count", 0)
+                views = safe_int(video.get("view_count"))
+                likes = safe_int(video.get("like_count"))
+                comments = safe_int(video.get("comment_count"))
                 if views > 0:
                     video_data.append({
-                        "Title": video.get("title", "Unknown")[:50],
-                        "Like Ratio %": (video.get("like_count", 0) / views) * 100,
-                        "Comment Ratio %": (video.get("comment_count", 0) / views) * 100,
+                        "Title": (video.get("title") or "Unknown")[:50],
+                        "Like Ratio %": (likes / views) * 100,
+                        "Comment Ratio %": (comments / views) * 100,
                     })
             
             if video_data:

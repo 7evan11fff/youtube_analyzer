@@ -228,114 +228,106 @@ class ContentBlueprintGenerator:
     @staticmethod
     def generate_what_works(analysis: Dict[str, Any]) -> Dict[str, List[str]]:
         """
-        Identify what works best in the niche.
-        
-        Args:
-            analysis: Comprehensive analysis results
-            
-        Returns:
-            Dictionary with proven strategies
+        Build 'what works' from actual correlation data + data-driven insights,
+        then supplement with universal best practices only where data is thin.
         """
         logger.info("Extracting what works...")
-        
-        content_strategy = analysis.get("content_strategy", {})
-        engagement = analysis.get("engagement", {}).get("engagement_analysis", {})
-        
-        # Identify top performing patterns
-        top_videos = engagement.get("top_performing_videos", [])
-        
+
+        data_driven = analysis.get("data_driven_insights", {}).get("what_works", {})
+        correlations = analysis.get("correlations", {})
+
+        engagement_drivers = list(data_driven.get("engagement_drivers", []))
+        title_strategies = list(data_driven.get("title_strategies", []))
+        format_insights = list(data_driven.get("format_insights", []))
+
+        # Add correlation-based insights
+        length_corr = correlations.get("length_vs_performance", {})
+        best_length = length_corr.get("best_performing_length", "")
+        if best_length and best_length != "unknown":
+            bracket_data = length_corr.get("by_bracket", {}).get(best_length, {})
+            if bracket_data.get("count", 0) >= 2:
+                format_insights.append(
+                    f"Best performing format: {best_length} — median {bracket_data.get('median_views', 0):,} views, "
+                    f"{bracket_data.get('avg_engagement', 0):.2f}% engagement ({bracket_data['count']} videos)"
+                )
+
+        title_corr = correlations.get("title_patterns_vs_performance", {})
+        for p in title_corr.get("positive_patterns", [])[:3]:
+            pattern = p["pattern"].replace("has_", "").replace("_", " ")
+            title_strategies.append(
+                f"Titles with {pattern}: +{p['view_lift_percent']:.0f}% more views "
+                f"({p['median_views_with']:,} vs {p['median_views_without']:,} median)"
+            )
+
+        day_corr = correlations.get("upload_day_vs_performance", {})
+        best_day = day_corr.get("best_day", "")
+        if best_day:
+            day_data = day_corr.get("by_day", {}).get(best_day, {})
+            if day_data.get("count", 0) >= 2:
+                engagement_drivers.append(
+                    f"Best upload day: {best_day} — {day_data.get('median_views', 0):,} median views "
+                    f"({day_data['count']} videos)"
+                )
+
+        # Add universal best practices only if we have fewer than 3 data points
+        if len(engagement_drivers) < 3:
+            engagement_drivers.extend([
+                "Strong hook in first 10 seconds that addresses a specific viewer pain point",
+                "Consistent upload schedule to train the algorithm and build viewer habit",
+            ])
+
         return {
-            "top_engagement_drivers": [
-                "Clear value proposition in first 30 seconds",
-                "Strong hooks that address viewer pain points",
-                "Consistent upload schedule (creates subscriber habit)",
-                "Series format (increases watch time and retention)",
-                "Collaboration with other creators in niche"
-            ],
-            "top_thumbnail_styles": [
-                "High contrast colors with bright accents",
-                "Close-up faces with strong emotion (surprise, excitement)",
-                "Text overlay highlighting main benefit",
-                "Consistent branding and format",
-                "Arrows or elements directing viewer attention"
-            ],
-            "top_title_formulas": [
-                "How To [Result] - [Unique Angle/Time]",
-                "The [Superlative] Guide to [Topic]",
-                "[Number] Ways to [Achieve Outcome]",
-                "[Question] + [Surprising Answer]",
-                "[Problem] - The [Solution] You Need"
-            ],
-            "top_content_structures": [
-                "Hook (attention grab) → Problem → Solution → Call to Action",
-                "Start with result → Reverse engineer process → Recap",
-                "Common mistake → Why it fails → Correct method",
-                "Setup expectation → Exceed expectation → Inspire action",
-                "Story-driven narrative → Lesson learned → Application"
-            ],
+            "engagement_drivers": engagement_drivers,
+            "title_strategies": title_strategies,
+            "format_insights": format_insights,
             "best_practices": [
-                "Keep average watch time above 50% of video length",
-                "Use pattern interrupts every 30-60 seconds to prevent drop-off",
-                "Include super-engaging first 8 seconds (golden window)",
-                "End with clear CTA for likes, comments, and subscriptions",
-                "Create playlists for binge-watching (increases session watch time)",
-                "Use YouTube cards and end screens strategically",
-                "Engage in comments first 24 hours (signals active channel)"
-            ]
+                "Engage in comments within first 24h (signals active channel to algorithm)",
+                "Create playlists to boost session watch time",
+                "Use chapter markers in descriptions for longer videos",
+                "Include clear CTA at natural moments, not just at the end",
+            ],
         }
     
     @staticmethod
     def generate_what_doesnt_work(analysis: Dict[str, Any]) -> Dict[str, List[str]]:
         """
-        Identify what to avoid.
-        
-        Args:
-            analysis: Comprehensive analysis results
-            
-        Returns:
-            Dictionary with anti-patterns and mistakes
+        Build 'what doesn't work' from actual data — comparing bottom-performing
+        videos against the top, supplemented with universal pitfalls.
         """
         logger.info("Identifying what doesn't work...")
-        
+
+        data_driven = analysis.get("data_driven_insights", {}).get("what_doesnt_work", {})
+        correlations = analysis.get("correlations", {})
+
+        content_warnings = list(data_driven.get("content_warnings", []))
+        title_warnings = list(data_driven.get("title_warnings", []))
+        format_warnings = list(data_driven.get("format_warnings", []))
+
+        # Add negative title patterns from correlations
+        title_corr = correlations.get("title_patterns_vs_performance", {})
+        for p in title_corr.get("negative_patterns", [])[:3]:
+            pattern = p["pattern"].replace("has_", "").replace("_", " ")
+            title_warnings.append(
+                f"Titles with {pattern}: {p['view_lift_percent']:.0f}% fewer views "
+                f"({p['median_views_with']:,} vs {p['median_views_without']:,} median)"
+            )
+
+        # Universal pitfalls if data-driven list is thin
+        if len(content_warnings) < 2:
+            content_warnings.extend([
+                "Inconsistent upload schedule loses algorithm momentum",
+                "Ignoring audience comments misses feedback loops",
+            ])
+        if len(title_warnings) < 2:
+            title_warnings.extend([
+                "Clickbait titles that don't deliver cause high bounce rates",
+                "Vague titles that don't promise a specific benefit",
+            ])
+
         return {
-            "engagement_killers": [
-                "Taking too long to deliver value (empty intro rambling)",
-                "Inconsistent upload schedule (loses subscriber momentum)",
-                "Low production quality (viewers perceive low value)",
-                "Weak CTAs that feel pushy or desperate",
-                "Copying other creators without unique angle (low original value)"
-            ],
-            "thumbnail_red_flags": [
-                "All-text thumbnails with no visual interest",
-                "Blurry or low-resolution images",
-                "Too much text (unreadable at small size)",
-                "Overly cluttered with multiple competing elements",
-                "Misleading thumbnails that don't match content (damages trust)"
-            ],
-            "title_mistakes": [
-                "Clickbait titles that mislead about content (increases bounce)",
-                "Vague titles that don't promise clear benefit",
-                "Titles too long or with poor keyword placement",
-                "Using ALL CAPS throughout (looks unprofessional)",
-                "Spammy special characters that look desperate"
-            ],
-            "common_creator_mistakes": [
-                "Not optimizing for YouTube's algorithm (no keywords in title/description)",
-                "Ignoring audience feedback and comments",
-                "Sporadic uploading pattern (confuses algorithm, loses subscribers)",
-                "No consistent theme or style across videos",
-                "Not studying successful creators in the niche",
-                "Giving up after 10-20 videos (takes 50+ to find audience)",
-                "Neglecting description (massive SEO opportunity wasted)",
-                "Not using chapter markers in descriptions"
-            ],
-            "content_structure_problems": [
-                "Burying main content after 5+ minutes of intro",
-                "Not providing clear actionable steps",
-                "Ambiguous CTAs that don't tell viewers what to do next",
-                "Ending abruptly without recap or closure",
-                "Failing to address the specific problem statement"
-            ]
+            "content_warnings": content_warnings,
+            "title_warnings": title_warnings,
+            "format_warnings": format_warnings,
         }
     
     @staticmethod

@@ -577,6 +577,394 @@ class GrowthPatternAnalyzer:
         }
 
 
+class CorrelationAnalyzer:
+    """
+    Finds what actually drives engagement in a specific niche by correlating
+    video attributes (length, title patterns, upload timing) with performance.
+    """
+
+    @staticmethod
+    def analyze_length_vs_performance(videos: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Which video length brackets get the best engagement?"""
+        logger.info("Correlating video length with performance...")
+        from data_cleaning import safe_int
+
+        brackets = {
+            "short (<10 min)": [],
+            "medium (10-20 min)": [],
+            "long (20-60 min)": [],
+            "extra-long (60+ min)": [],
+        }
+
+        for v in videos:
+            dur = safe_int(v.get("duration_seconds"))
+            views = safe_int(v.get("view_count"))
+            eng = v.get("engagement_rate", 0)
+            if dur <= 0 or views <= 0:
+                continue
+            minutes = dur / 60
+            if minutes <= 10:
+                key = "short (<10 min)"
+            elif minutes <= 20:
+                key = "medium (10-20 min)"
+            elif minutes <= 60:
+                key = "long (20-60 min)"
+            else:
+                key = "extra-long (60+ min)"
+            brackets[key].append({"views": views, "engagement": eng})
+
+        results = {}
+        for bracket, items in brackets.items():
+            if not items:
+                results[bracket] = {"count": 0, "avg_views": 0, "avg_engagement": 0}
+                continue
+            views_list = [i["views"] for i in items]
+            eng_list = [i["engagement"] for i in items]
+            results[bracket] = {
+                "count": len(items),
+                "avg_views": round(statistics.mean(views_list)),
+                "median_views": round(statistics.median(views_list)),
+                "avg_engagement": round(statistics.mean(eng_list), 3),
+            }
+
+        ranked = sorted(
+            [(k, v) for k, v in results.items() if v["count"] >= 2],
+            key=lambda x: x[1]["median_views"],
+            reverse=True,
+        )
+        best_length = ranked[0][0] if ranked else "unknown"
+
+        return {"by_bracket": results, "best_performing_length": best_length}
+
+    @staticmethod
+    def analyze_title_patterns_vs_performance(videos: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Which title patterns correlate with higher views/engagement?"""
+        logger.info("Correlating title patterns with performance...")
+        from data_cleaning import safe_int
+
+        patterns = {
+            "has_number": lambda t: bool(re.search(r"\d+", t)),
+            "has_question": lambda t: "?" in t,
+            "has_brackets": lambda t: bool(re.search(r"[\[\(]", t)),
+            "has_colon": lambda t: ":" in t,
+            "has_how_to": lambda t: "how to" in t.lower() or "how i" in t.lower(),
+            "has_list_format": lambda t: bool(re.search(r"^\d+\s", t) or re.search(r"top\s+\d+", t, re.I)),
+            "has_year": lambda t: bool(re.search(r"202[0-9]", t)),
+            "has_caps_word": lambda t: any(w.isupper() and len(w) > 2 for w in t.split()),
+            "is_short_title": lambda t: len(t) < 40,
+            "is_long_title": lambda t: len(t) > 70,
+        }
+
+        results = {}
+        for pattern_name, detector in patterns.items():
+            matching = [v for v in videos if detector(v.get("title", ""))]
+            non_matching = [v for v in videos if not detector(v.get("title", ""))]
+
+            if len(matching) < 2 or len(non_matching) < 2:
+                continue
+
+            match_views = [safe_int(v.get("view_count")) for v in matching if safe_int(v.get("view_count")) > 0]
+            non_views = [safe_int(v.get("view_count")) for v in non_matching if safe_int(v.get("view_count")) > 0]
+
+            if not match_views or not non_views:
+                continue
+
+            match_median = statistics.median(match_views)
+            non_median = statistics.median(non_views)
+            lift = ((match_median - non_median) / non_median * 100) if non_median > 0 else 0
+
+            match_eng = [v.get("engagement_rate", 0) for v in matching if v.get("engagement_rate", 0) > 0]
+            non_eng = [v.get("engagement_rate", 0) for v in non_matching if v.get("engagement_rate", 0) > 0]
+
+            results[pattern_name] = {
+                "count_with": len(matching),
+                "count_without": len(non_matching),
+                "median_views_with": round(match_median),
+                "median_views_without": round(non_median),
+                "view_lift_percent": round(lift, 1),
+                "avg_engagement_with": round(statistics.mean(match_eng), 3) if match_eng else 0,
+                "avg_engagement_without": round(statistics.mean(non_eng), 3) if non_eng else 0,
+            }
+
+        positive = sorted(
+            [(k, v) for k, v in results.items() if v["view_lift_percent"] > 10],
+            key=lambda x: x[1]["view_lift_percent"],
+            reverse=True,
+        )
+        negative = sorted(
+            [(k, v) for k, v in results.items() if v["view_lift_percent"] < -10],
+            key=lambda x: x[1]["view_lift_percent"],
+        )
+
+        return {
+            "pattern_performance": results,
+            "positive_patterns": [{"pattern": k, **v} for k, v in positive[:5]],
+            "negative_patterns": [{"pattern": k, **v} for k, v in negative[:5]],
+        }
+
+    @staticmethod
+    def analyze_upload_day_vs_performance(videos: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Which upload days get the most views?"""
+        logger.info("Correlating upload day with performance...")
+        from data_cleaning import parse_upload_date, safe_int
+
+        day_data: Dict[str, List[int]] = {}
+
+        for v in videos:
+            parsed = parse_upload_date(v.get("upload_date"))
+            views = safe_int(v.get("view_count"))
+            if not parsed or views <= 0:
+                continue
+            day_name = parsed.strftime("%A")
+            day_data.setdefault(day_name, []).append(views)
+
+        results = {}
+        for day, views_list in day_data.items():
+            results[day] = {
+                "count": len(views_list),
+                "median_views": round(statistics.median(views_list)),
+                "avg_views": round(statistics.mean(views_list)),
+            }
+
+        ranked = sorted(
+            [(k, v) for k, v in results.items() if v["count"] >= 2],
+            key=lambda x: x[1]["median_views"],
+            reverse=True,
+        )
+
+        return {
+            "by_day": results,
+            "best_day": ranked[0][0] if ranked else "Unknown",
+            "worst_day": ranked[-1][0] if ranked else "Unknown",
+        }
+
+    @staticmethod
+    def find_what_works(videos: List[Dict[str, Any]], niche: str) -> Dict[str, List[str]]:
+        """
+        Derive data-driven 'what works' insights by comparing top-performing
+        videos against the rest.
+        """
+        logger.info("Deriving data-driven 'what works' insights...")
+        from data_cleaning import partition_by_performance, safe_int, extract_clean_keywords
+
+        insights_engagement = []
+        insights_titles = []
+        insights_format = []
+
+        top, middle, bottom = partition_by_performance(videos, "view_count", 0.25, 0.25)
+
+        if not top or not bottom:
+            return {"engagement_drivers": [], "title_strategies": [], "format_insights": []}
+
+        # Length comparison
+        top_durs = [safe_int(v.get("duration_seconds")) / 60 for v in top if safe_int(v.get("duration_seconds")) > 0]
+        bot_durs = [safe_int(v.get("duration_seconds")) / 60 for v in bottom if safe_int(v.get("duration_seconds")) > 0]
+        if top_durs and bot_durs:
+            top_med_dur = statistics.median(top_durs)
+            bot_med_dur = statistics.median(bot_durs)
+            if top_med_dur > bot_med_dur * 1.3:
+                insights_format.append(
+                    f"Top videos are longer (median {top_med_dur:.0f} min vs {bot_med_dur:.0f} min for underperformers)"
+                )
+            elif bot_med_dur > top_med_dur * 1.3:
+                insights_format.append(
+                    f"Shorter videos perform better (top videos median {top_med_dur:.0f} min vs {bot_med_dur:.0f} min)"
+                )
+
+        # Title length
+        top_title_lens = [len(v.get("title", "")) for v in top]
+        bot_title_lens = [len(v.get("title", "")) for v in bottom]
+        if top_title_lens and bot_title_lens:
+            top_avg = statistics.mean(top_title_lens)
+            bot_avg = statistics.mean(bot_title_lens)
+            if top_avg < bot_avg * 0.85:
+                insights_titles.append(
+                    f"Shorter titles perform better in this niche (top videos avg {top_avg:.0f} chars vs {bot_avg:.0f})"
+                )
+            elif top_avg > bot_avg * 1.15:
+                insights_titles.append(
+                    f"Longer, more descriptive titles perform better (top avg {top_avg:.0f} chars vs {bot_avg:.0f})"
+                )
+
+        # Title pattern comparison
+        for pattern_name, detector in [
+            ("numbers", lambda t: bool(re.search(r"\d+", t))),
+            ("questions", lambda t: "?" in t),
+            ("how-to", lambda t: "how to" in t.lower()),
+            ("brackets", lambda t: "[" in t or "(" in t),
+        ]:
+            top_pct = sum(1 for v in top if detector(v.get("title", ""))) / len(top) * 100
+            bot_pct = sum(1 for v in bottom if detector(v.get("title", ""))) / len(bottom) * 100
+            if top_pct > bot_pct + 15:
+                insights_titles.append(
+                    f"Titles with {pattern_name} appear in {top_pct:.0f}% of top videos vs {bot_pct:.0f}% of underperformers"
+                )
+            elif bot_pct > top_pct + 15:
+                insights_titles.append(
+                    f"Titles with {pattern_name} are more common in underperforming videos ({bot_pct:.0f}% vs {top_pct:.0f}%)"
+                )
+
+        # Engagement comparison
+        top_eng = [v.get("engagement_rate", 0) for v in top if v.get("engagement_rate", 0) > 0]
+        bot_eng = [v.get("engagement_rate", 0) for v in bottom if v.get("engagement_rate", 0) > 0]
+        if top_eng and bot_eng:
+            top_med_eng = statistics.median(top_eng)
+            bot_med_eng = statistics.median(bot_eng)
+            insights_engagement.append(
+                f"Top-performing videos have {top_med_eng:.2f}% engagement rate vs {bot_med_eng:.2f}% for underperformers"
+            )
+
+        # Keyword differences
+        top_keywords = Counter()
+        bot_keywords = Counter()
+        for v in top:
+            top_keywords.update(extract_clean_keywords(v.get("title", "")))
+        for v in bottom:
+            bot_keywords.update(extract_clean_keywords(v.get("title", "")))
+
+        top_unique = []
+        for kw, count in top_keywords.most_common(20):
+            if count >= 2 and bot_keywords.get(kw, 0) == 0:
+                top_unique.append(kw)
+        if top_unique:
+            insights_titles.append(
+                f"Keywords unique to top videos: {', '.join(top_unique[:5])}"
+            )
+
+        return {
+            "engagement_drivers": insights_engagement,
+            "title_strategies": insights_titles,
+            "format_insights": insights_format,
+        }
+
+    @staticmethod
+    def find_what_doesnt_work(videos: List[Dict[str, Any]], niche: str) -> Dict[str, List[str]]:
+        """
+        Derive data-driven 'what doesn't work' by analyzing bottom-performing videos.
+        """
+        logger.info("Deriving data-driven 'what doesn't work' insights...")
+        from data_cleaning import partition_by_performance, safe_int, extract_clean_keywords
+
+        warnings = []
+        title_warnings = []
+        format_warnings = []
+
+        top, middle, bottom = partition_by_performance(videos, "view_count", 0.25, 0.25)
+
+        if not top or not bottom:
+            return {"content_warnings": [], "title_warnings": [], "format_warnings": []}
+
+        # Check if bottom performers have zero engagement
+        zero_eng = sum(1 for v in bottom if v.get("engagement_rate", 0) < 0.5)
+        if zero_eng > len(bottom) * 0.5:
+            warnings.append(
+                f"{zero_eng} of {len(bottom)} underperforming videos have near-zero engagement — suggests poor hooks or misleading titles"
+            )
+
+        # Check for very long or very short titles in bottom
+        bot_title_lens = [len(v.get("title", "")) for v in bottom if v.get("title")]
+        if bot_title_lens:
+            very_short = sum(1 for l in bot_title_lens if l < 25)
+            very_long = sum(1 for l in bot_title_lens if l > 80)
+            if very_short > len(bottom) * 0.3:
+                title_warnings.append("Vague or overly short titles (<25 chars) are common in underperforming videos")
+            if very_long > len(bottom) * 0.3:
+                title_warnings.append("Very long titles (80+ chars) get truncated in search results and perform poorly")
+
+        # Check for no description
+        no_desc = sum(1 for v in bottom if len(v.get("description", "")) < 50)
+        if no_desc > len(bottom) * 0.3:
+            warnings.append(
+                f"{no_desc} of {len(bottom)} underperformers have minimal descriptions — missed SEO opportunity"
+            )
+
+        # Check bottom performers for missing engagement hooks
+        bot_descs = [v.get("description", "") for v in bottom]
+        no_cta = sum(1 for d in bot_descs if not re.search(r"subscribe|like|comment", d, re.I))
+        if no_cta > len(bottom) * 0.5:
+            warnings.append("Most underperforming videos lack any call-to-action in their descriptions")
+
+        # Keywords that only appear in bottom performers
+        bot_keywords = Counter()
+        top_keywords = Counter()
+        for v in bottom:
+            bot_keywords.update(extract_clean_keywords(v.get("title", "")))
+        for v in top:
+            top_keywords.update(extract_clean_keywords(v.get("title", "")))
+
+        bot_unique = []
+        for kw, count in bot_keywords.most_common(20):
+            if count >= 2 and top_keywords.get(kw, 0) == 0:
+                bot_unique.append(kw)
+        if bot_unique:
+            title_warnings.append(
+                f"Keywords associated with underperformance: {', '.join(bot_unique[:5])}"
+            )
+
+        return {
+            "content_warnings": warnings,
+            "title_warnings": title_warnings,
+            "format_warnings": format_warnings,
+        }
+
+
+class TitleScorer:
+    """Scores individual title ideas based on patterns that work in the niche."""
+
+    def __init__(self, pattern_data: Dict[str, Any]):
+        self.patterns = pattern_data.get("pattern_performance", {})
+
+    def score_title(self, title: str) -> Dict[str, Any]:
+        checks = {
+            "has_number": bool(re.search(r"\d+", title)),
+            "has_question": "?" in title,
+            "has_brackets": bool(re.search(r"[\[\(]", title)),
+            "has_colon": ":" in title,
+            "has_how_to": "how to" in title.lower() or "how i" in title.lower(),
+            "has_list_format": bool(re.search(r"^\d+\s", title) or re.search(r"top\s+\d+", title, re.I)),
+            "has_year": bool(re.search(r"202[0-9]", title)),
+            "has_caps_word": any(w.isupper() and len(w) > 2 for w in title.split()),
+            "is_short_title": len(title) < 40,
+            "is_long_title": len(title) > 70,
+        }
+
+        score = 50.0
+        reasons = []
+
+        for pattern_name, present in checks.items():
+            if pattern_name not in self.patterns:
+                continue
+            data = self.patterns[pattern_name]
+            lift = data.get("view_lift_percent", 0)
+            if present and lift > 10:
+                bonus = min(lift / 5, 15)
+                score += bonus
+                reasons.append(f"+{bonus:.0f} for {pattern_name.replace('_', ' ')} (lifts views {lift:.0f}%)")
+            elif present and lift < -10:
+                penalty = min(abs(lift) / 5, 15)
+                score -= penalty
+                reasons.append(f"-{penalty:.0f} for {pattern_name.replace('_', ' ')} (hurts views {lift:.0f}%)")
+
+        length = len(title)
+        if 40 <= length <= 65:
+            score += 5
+            reasons.append("+5 for optimal title length (40-65 chars)")
+        elif length > 80:
+            score -= 5
+            reasons.append("-5 for title too long (gets truncated)")
+        elif length < 25:
+            score -= 5
+            reasons.append("-5 for title too short (may lack context)")
+
+        score = max(0, min(100, score))
+
+        return {
+            "title": title,
+            "score": round(score),
+            "reasons": reasons,
+        }
+
+
 class ComprehensiveAnalyzer:
     """Orchestrates all analysis modules."""
     
@@ -586,19 +974,23 @@ class ComprehensiveAnalyzer:
         self.engagement = EngagementAnalyzer()
         self.competition = CompetitionAnalyzer()
         self.growth = GrowthPatternAnalyzer()
+        self.correlation = CorrelationAnalyzer()
     
     def analyze_niche(self, videos: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Run comprehensive analysis on niche data.
-        
-        Args:
-            videos: List of video data
-            
-        Returns:
-            Dictionary with all analysis results
-        """
+        """Run comprehensive analysis on niche data."""
+        from data_cleaning import normalize_videos, extract_niche_topics
+
         logger.info(f"Starting comprehensive analysis of {len(videos)} videos...")
-        
+
+        videos = normalize_videos(videos)
+
+        if not videos:
+            logger.warning("No valid videos after cleaning")
+            return {"error": "No valid video data"}
+
+        titles = [v.get("title", "") for v in videos if v.get("title")]
+        niche_topics = extract_niche_topics(titles)
+
         results = {
             "metadata": {
                 "total_videos_analyzed": len(videos),
@@ -616,12 +1008,22 @@ class ComprehensiveAnalyzer:
             },
             "competition": {
                 "competitive_landscape": self.competition.analyze_competition(videos),
-                "content_gaps": self.competition.find_content_gaps(videos)
+                "content_gaps": self.competition.find_content_gaps(videos),
+                "niche_topics": niche_topics,
             },
             "growth": {
                 "growth_patterns": self.growth.analyze_growth_curves(videos),
                 "trending_topics": self.growth.analyze_trending_topics(videos)
-            }
+            },
+            "correlations": {
+                "length_vs_performance": self.correlation.analyze_length_vs_performance(videos),
+                "title_patterns_vs_performance": self.correlation.analyze_title_patterns_vs_performance(videos),
+                "upload_day_vs_performance": self.correlation.analyze_upload_day_vs_performance(videos),
+            },
+            "data_driven_insights": {
+                "what_works": self.correlation.find_what_works(videos, ""),
+                "what_doesnt_work": self.correlation.find_what_doesnt_work(videos, ""),
+            },
         }
         
         logger.info("Comprehensive analysis complete")

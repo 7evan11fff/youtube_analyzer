@@ -342,17 +342,31 @@ class NicheDataCollector:
         self.api = YouTubeAPIClient(api_key)
         self.db = get_db()
     
+    @staticmethod
+    def _build_search_queries(niche: str, num_videos: int) -> List[Dict[str, Any]]:
+        """
+        Build multiple search queries for broader niche coverage.
+        A single query biases toward YouTube's top results; multiple queries
+        with different sort orders and variations capture a fuller picture.
+        """
+        queries = [
+            {"query": niche, "order": "relevance"},
+        ]
+        if num_videos >= 30:
+            queries.append({"query": niche, "order": "viewCount"})
+        if num_videos >= 50:
+            queries.append({"query": f"{niche} tutorial", "order": "relevance"})
+        if num_videos >= 75:
+            queries.append({"query": f"{niche} for beginners", "order": "relevance"})
+        if num_videos >= 100:
+            queries.append({"query": f"{niche} tips", "order": "relevance"})
+            queries.append({"query": niche, "order": "date"})
+        return queries
+
     def collect_niche_data(self, niche: str, num_videos: int = 50, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """
-        Collect comprehensive data for a niche.
-        
-        Args:
-            niche: Niche name/query
-            num_videos: Number of videos to collect (default 50, max 500)
-            force_refresh: Force re-fetch even if cached
-            
-        Returns:
-            List of enriched video data
+        Collect comprehensive data for a niche using multiple search strategies
+        for broader coverage.
         """
         num_videos = min(max(num_videos, 10), 500)
         
@@ -362,14 +376,28 @@ class NicheDataCollector:
         # Check cache
         cached_videos = self.db.get_videos_by_niche(niche, limit=num_videos)
         if cached_videos and not force_refresh:
-            age_hours = 24  # Consider cache fresh if less than 24 hours old
-            if len(cached_videos) >= num_videos * 0.8:  # Have at least 80% of requested videos
+            if len(cached_videos) >= num_videos * 0.8:
                 logger.info(f"Using {len(cached_videos)} cached videos from database")
                 return cached_videos
-        
-        # Search for videos
-        videos = self.api.search_videos(niche, max_results=num_videos, order="relevance")
-        
+
+        queries = self._build_search_queries(niche, num_videos)
+        seen_ids = set()
+        all_videos = []
+        per_query = max(10, num_videos // len(queries) + 10)
+
+        for q in queries:
+            if len(all_videos) >= num_videos:
+                break
+            logger.info(f"Searching: '{q['query']}' (sort: {q['order']}, limit: {per_query})")
+            results = self.api.search_videos(q["query"], max_results=per_query, order=q["order"])
+            for v in results:
+                vid_id = v.get("id")
+                if vid_id and vid_id not in seen_ids:
+                    seen_ids.add(vid_id)
+                    all_videos.append(v)
+
+        videos = all_videos[:num_videos]
+
         if not videos:
             logger.warning(f"No videos found for niche: {niche}")
             return []
